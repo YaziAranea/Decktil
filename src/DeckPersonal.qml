@@ -108,10 +108,10 @@ QtObject {
         }
     }
 
-    function key(inserted, choice, erase) {
+    function key(inserted, choice, erase, replaceLength) {
         if (!permitted || !tracker)
             return
-        if (!Learning.queue(tracker, inserted, choice, erase)) {
+        if (!Learning.queue(tracker, inserted, choice, erase, replaceLength)) {
             resetSequence()
             return
         }

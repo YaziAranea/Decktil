@@ -33,6 +33,28 @@ class PredictionCacheTests(unittest.TestCase):
             with patch.object(gzip, "open", side_effect=AssertionError("cache was not reused")):
                 keyboard.write_completions(index, source)
 
+    def test_add_spelling_index_to_previous_install_then_roll_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keyboard = self.load_keyboard(directory)
+            source, index, spelling = root / "ru.txt.gz", root / "DeckWords.js", root / "DeckSpelling.js"
+            source.write_bytes(gzip.compress("дом\nда\nдомик\nслово\n".encode()))
+            os.utime(source, ns=(2_000_000_000, 2_000_000_000))
+            keyboard.write_completions(index, source)
+            # The old prefix cache is already up to date. The new spelling cache must be built.
+            keyboard.write_completions(index, source, spelling)
+            self.assertEqual(json.loads(spelling.read_text().split(" = ", 1)[1]),
+                             {"до": {"м": 1, "мик": 3}, "да": {"": 2}, "сл": {"ово": 4}})
+            with patch.object(gzip, "open", side_effect=AssertionError("reopened dictionary")):
+                keyboard.write_completions(index, source, spelling)
+
+            source.write_bytes(gzip.compress("домик\nдом\n".encode()))
+            os.utime(source, ns=(1_000_000_000, 1_000_000_000))
+            keyboard.write_completions(index, source, spelling)
+            self.assertEqual(json.loads(spelling.read_text().split(" = ", 1)[1]),
+                             {"до": {"мик": 1, "м": 2}})
+            self.assertEqual(json.loads(index.read_text().split(" = ", 1)[1]), {"до": ["домик", "дом"]})
+
     def test_replacement_and_missing_model(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

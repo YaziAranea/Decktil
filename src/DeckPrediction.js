@@ -86,7 +86,116 @@ function lookup(table, key) {
     return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : []
 }
 
-function suggestions(ctx, words, bigram, trigram, personal) {
+function rankOf(spelling, word) {
+    const bucket = spelling[word.slice(0, 2)]
+    const rank = bucket && bucket[word.slice(2)]
+    return typeof rank === "number" ? rank : 0
+}
+
+function withCase(word, prefix) {
+    if (prefix.includes("’"))
+        word = word.replace(/'/g, "’")
+    if (prefix.length > 1 && prefix === prefix.toUpperCase())
+        return word.toUpperCase()
+    if (prefix[0] !== prefix[0].toLowerCase() || /^i['’]/.test(word))
+        return word[0].toUpperCase() + word.slice(1)
+    return word
+}
+
+// Generate the few hundred strings one ordinary typing error away. The
+// prebuilt rank table gives a constant-time lookup without scanning the dictionary.
+function visitEdits(prefix, russian, keep) {
+    const alphabet = russian ? "абвгдеёжзийклмнопрстуфхцчшщъыьэюя-" : "abcdefghijklmnopqrstuvwxyz'-"
+    for (let i = 0; i <= prefix.length; ++i) {
+        const left = prefix.slice(0, i)
+        const right = prefix.slice(i)
+        const ch = right.charAt(0)
+        const rest = right.slice(1)
+        const last = prefix.charAt(i - 1)
+        if (right) {
+            keep(left + rest, ch === last ? 1.1 : 2)
+            if (right.length > 1 && ch !== right[1])
+                keep(left + right[1] + ch + right.slice(2), 1)
+        }
+        for (let j = 0; j < alphabet.length; ++j) {
+            const letter = alphabet[j]
+            if (letter !== ch && right)
+                keep(left + letter + rest, 3)
+            if (letter !== last)
+                keep(left + letter + right, letter === ch ? 1.1 : 2)
+        }
+    }
+}
+
+function corrections(ctx, prefix, words, spelling, priorityGroups) {
+    const typedRank = rankOf(spelling, prefix)
+    // Valid everyday words are left alone. Low-frequency correct spellings,
+    // names and common misspellings can coexist with a much likelier form.
+    if (typedRank && typedRank <= 8000)
+        return []
+    const variants = Object.create(null)
+    const matches = new Map()
+    function consider(word, rank, cost) {
+        if (word.startsWith(prefix) || (typedRank && rank * 8 > typedRank))
+            return
+        const score = (rank + 80) * cost
+        const previous = matches.get(word)
+        if (previous === undefined || score < previous)
+            matches.set(word, score)
+    }
+    visitEdits(prefix, ctx.russian, (word, cost) => {
+        if (variants[word] !== undefined && variants[word] <= cost)
+            return
+        variants[word] = cost
+        const rank = rankOf(spelling, word)
+        if (rank)
+            consider(word, rank, cost)
+    })
+
+    function considerLonger(word, rank) {
+        // Also finish a mistyped prefix. A distant suffix has weaker evidence.
+        for (let size = prefix.length - 1; size <= prefix.length + 1; ++size) {
+            const extra = word.length - size
+            if (extra <= 0 || extra > 7)
+                continue
+            const cost = variants[word.slice(0, size)]
+            if (cost !== undefined)
+                consider(word, rank, cost * (3 + 0.5 * extra))
+        }
+    }
+    if (prefix.length >= 4) {
+        // The buckets retain corpus frequency order. A bounded scan finds
+        // common continuations even when the first two letters are transposed.
+        const heads = [prefix.slice(0, 2)]
+        if (prefix[0] !== prefix[1])
+            heads.push(prefix[1] + prefix[0])
+        for (const head of heads) {
+            const bucket = lookup(words, head)
+            for (let i = 0; i < Math.min(240, bucket.length); ++i) {
+                const word = bucket[i]
+                if (!word.startsWith(prefix))
+                    considerLonger(word, rankOf(spelling, word) || 100000)
+            }
+        }
+    }
+    for (const group of priorityGroups) {
+        for (const item of group) {
+            const word = canonical(item)
+            if (!validWord(word, ctx.russian, false) || word.startsWith(prefix))
+                continue
+            const rank = Math.min(rankOf(spelling, word) || 1500, 1500) * 0.45
+            const cost = variants[word]
+            if (cost !== undefined)
+                consider(word, rank, cost)
+            else if (prefix.length >= 4)
+                considerLonger(word, rank)
+        }
+    }
+    return Array.from(matches, pair => ({word: pair[0], score: pair[1]}))
+                .sort((a, b) => a.score - b.score || a.word.localeCompare(b.word)).slice(0, 3)
+}
+
+function suggestions(ctx, words, bigram, trigram, personal, spelling) {
     if (!ctx)
         return []
     const result = []
@@ -98,11 +207,17 @@ function suggestions(ctx, words, bigram, trigram, personal) {
         groups.push(lookup(trigram, ctx.previous.join(" ")))
     if (last >= 0)
         groups.push(lookup(bigram, ctx.previous[last]))
+    const contextual = groups.length
     if (prefix.length >= 2)
         groups.push(lookup(words, prefix.slice(0, 2)))
-    for (const group of groups) {
-        for (const word of group) {
-            const lower = canonical(word)
+    let pinned = 0
+    exact: for (let g = 0; g < groups.length; ++g) {
+        const group = groups[g]
+        for (let i = 0; i < group.length; ++i) {
+            const word = group[i]
+            // Generated dictionary entries are already normalized. Most words
+            // in a two-letter bucket do not match the rest of this prefix.
+            const lower = g === contextual ? word : canonical(word)
             if (lower.length <= prefix.length || !lower.startsWith(prefix) || seen.indexOf(lower) >= 0
                     || !validWord(word, ctx.russian, false))
                 continue
@@ -116,15 +231,50 @@ function suggestions(ctx, words, bigram, trigram, personal) {
             } else {
                 result.push(word)
             }
+            if (g < contextual)
+                pinned = result.length
             if (result.length === 3)
-                return result
+                break exact
         }
     }
-    return result
+    if (!spelling || prefix.length < 3 || prefix.length > 32 || pinned === 3)
+        return result
+    if (result.length === 3 && result.every(word => {
+        const rank = rankOf(spelling, canonical(word))
+        return rank > 0 && rank < 2000
+    }))
+        return result
+    const nearby = corrections(ctx, prefix, words, spelling, groups.slice(0, contextual))
+    if (!nearby.length)
+        return result
+    // Retain contextual and competitive literal completions, leaving room for
+    // a strong correction when the only literal hits are obscure names/forms.
+    while (pinned < result.length) {
+        const rank = rankOf(spelling, canonical(result[pinned]))
+        if (rank && rank > 4 * nearby[0].score)
+            break
+        ++pinned
+    }
+    const leading = result.slice(0, pinned)
+    const slots = Math.min(3 - pinned, result.length > pinned ? 2 : 3)
+    for (const match of nearby.slice(0, slots))
+        leading.push(withCase(match.word, ctx.prefix))
+    return leading.concat(result.slice(pinned)).slice(0, 3)
 }
 
 function insertion(ctx, candidate, atEnd) {
     if (!ctx || !candidate || !candidate.startsWith(ctx.prefix) || candidate.length <= ctx.prefix.length)
         return ""
     return candidate.slice(ctx.prefix.length) + (atEnd ? " " : "")
+}
+
+function edit(ctx, candidate, atEnd) {
+    if (!ctx || !candidate || candidate === ctx.prefix || !validWord(candidate, ctx.russian, false))
+        return null
+    const suffix = insertion(ctx, candidate, atEnd)
+    if (suffix)
+        return { text: suffix, replaceFrom: 0, replaceLength: 0 }
+    // Both offsets use Qt's UTF-16 units relative to the editor's cursor.
+    const count = ctx.prefix.length
+    return { text: candidate + (atEnd ? " " : ""), replaceFrom: -count, replaceLength: count }
 }

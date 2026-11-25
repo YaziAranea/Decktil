@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.VirtualKeyboard
 import QtQuick.VirtualKeyboard.Components
 import "DeckWords.js" as Dictionary
+import "DeckSpelling.js" as Spelling
 import "DeckNext.js" as NextWords
 import "DeckPrediction.js" as Prediction
 
@@ -21,7 +22,7 @@ KeyboardRow {
     readonly property var wordContext: blocked ? null : Prediction.context(
         InputContext.surroundingText, InputContext.cursorPosition, InputContext.locale)
     readonly property var candidates: Prediction.suggestions(
-        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram, personal.words)
+        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram, personal.words, Spelling.spelling)
 
     property DeckPersonal personalization: DeckPersonal {
         id: personal
@@ -35,12 +36,12 @@ KeyboardRow {
             return
         const text = InputContext.surroundingText
         const pos = InputContext.cursorPosition
-        const insert = Prediction.insertion(wordContext, candidate, Prediction.canAppendSpace(text, pos))
-        if (insert) {
+        const edit = Prediction.edit(wordContext, candidate, Prediction.canAppendSpace(text, pos))
+        if (edit) {
             // Prevent a second tap on the old list before the native editor acknowledges the edit.
             settle.restart()
-            personal.key(insert, candidate, false)
-            InputContext.commit(insert)
+            personal.key(edit.text, candidate, false, edit.replaceLength)
+            InputContext.commit(edit.text, edit.replaceFrom, edit.replaceLength)
         }
     }
     Connections {

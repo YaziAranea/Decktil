@@ -62,18 +62,24 @@ def write_predictions(index, model):
     os.utime(index, ns=(stamp, stamp))
 
 
-def write_completions(index, dictionary):
+def write_completions(index, dictionary, spelling_index=None):
     stamp = dictionary.stat().st_mtime_ns
-    if index.is_file() and index.stat().st_mtime_ns == stamp:
+    files = [index] if spelling_index is None else [index, spelling_index]
+    if all(path.is_file() and path.stat().st_mtime_ns == stamp for path in files):
         return
     buckets = {}
+    spelling = {}
     with gzip.open(dictionary, "rt", encoding="utf-8") as words:
-        for line in words:
+        for rank, line in enumerate(words, 1):
             word = line.strip()
             buckets.setdefault(word[:2], []).append(word)
-    write_layout(index, ".pragma library\nvar words = " +
-                 json.dumps(buckets, ensure_ascii=False, separators=(",", ":")))
-    os.utime(index, ns=(stamp, stamp))
+            if spelling_index is not None:
+                spelling.setdefault(word[:2], {})[word[2:]] = rank
+    for path, name, table in ((index, "words", buckets), (spelling_index, "spelling", spelling)):
+        if path is not None:
+            write_layout(path, f".pragma library\nvar {name} = " +
+                         json.dumps(table, ensure_ascii=False, separators=(",", ":")))
+            os.utime(path, ns=(stamp, stamp))
 
 
 def generate_layouts():
@@ -95,7 +101,7 @@ def generate_layouts():
         code = "ru" if language.name == "ru_RU" else "en"
         dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
         write_predictions(dest / "DeckNext.js", dictionary.parent / f"{code}-next.json.gz")
-        write_completions(dest / "DeckWords.js", dictionary)
+        write_completions(dest / "DeckWords.js", dictionary, dest / "DeckSpelling.js")
         for source in language.iterdir():
             target = dest / source.name
             if source.suffix != ".qml":

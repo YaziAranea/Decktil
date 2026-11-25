@@ -8,10 +8,10 @@ function start(text, pos) {
              word: "", punctuation: "", previous: [], edits: [] }
 }
 
-function queue(state, inserted, choice, backspace) {
+function queue(state, inserted, choice, backspace, replaceLength) {
     if (state.edits.length >= 64)
         return false
-    state.edits.push({ text: inserted, choice: choice, erase: backspace })
+    state.edits.push({ text: inserted, choice: choice, erase: backspace, replaceLength: replaceLength || 0 })
     return true
 }
 
@@ -74,14 +74,13 @@ function acknowledged(state, text, pos) {
     let removed = 0, added = "", matched = 0
     for (let i = 0; i < state.edits.length; ++i) {
         const edit = state.edits[i]
-        if (edit.erase) {
-            if (added.length)
-                added = added.slice(0, -1)
-            else
-                ++removed
-        } else {
-            added += edit.text
+        const erase = edit.erase ? 1 : edit.replaceLength
+        if (erase) {
+            removed += Math.max(0, erase - added.length)
+            added = added.slice(0, Math.max(0, added.length - erase))
         }
+        if (!edit.erase)
+            added += edit.text
         const left = state.pos - removed
         const trusted = state.word + state.punctuation
         const before = trusted.slice(0, Math.max(0, trusted.length - removed))

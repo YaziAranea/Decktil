@@ -134,6 +134,19 @@ def learn(generation, locale, prev2, prev1, word):
                            (lang, max(size - MAX_ENTRIES_PER_LANGUAGE, MAX_ENTRIES_PER_LANGUAGE // 20)))
 
 
+def _one_edit(left, right):
+    """A single missing, extra, changed or transposed letter."""
+    if left == right or abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) > len(right):
+        left, right = right, left
+    pos = next((i for i, ch in enumerate(left) if ch != right[i]), len(left))
+    if len(left) != len(right):
+        return left[pos:] == right[pos + 1:]
+    return (left[pos + 1:] == right[pos + 1:] or
+            (left[pos:pos + 2] == right[pos:pos + 2][::-1] and left[pos + 2:] == right[pos + 2:]))
+
+
 def suggestions(locale, prev2, prev1, prefix):
     lang = _language(locale)
     path = _path()
@@ -168,5 +181,28 @@ def suggestions(locale, prev2, prev1, prefix):
                 if word not in result:
                     result.append(word)
                 if len(result) == 3:
-                    return result
+                    break
+            if len(result) == 3:
+                break
+        if len(prefix) >= 3:
+            # With at least three input letters a single edit preserves at
+            # least one end. Keep the Python matcher off unrelated entries.
+            db.create_function("one_edit", 2, _one_edit, deterministic=True)
+            close = []
+            for a, b in contexts:
+                rows = db.execute("""SELECT word FROM entries
+                    WHERE lang=? AND prev2=? AND prev1=? AND uses>=?
+                      AND length(word) BETWEEN ? AND ? AND (word GLOB ? OR word GLOB ?)
+                      AND word NOT GLOB ? AND one_edit(word, ?)
+                    ORDER BY uses DESC, word LIMIT 3""",
+                    (lang, a, b, MIN_USES, len(prefix)-1, len(prefix)+1,
+                     prefix[0]+"*", "*"+prefix[-1], prefix+"*", prefix))
+                for (word,) in rows:
+                    if word not in close:
+                        close.append(word)
+                    if len(close) == 3:
+                        break
+                if len(close) == 3:
+                    break
+            result.extend(close)
         return result

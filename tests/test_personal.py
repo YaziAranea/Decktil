@@ -55,6 +55,24 @@ class PersonalDictionary(unittest.TestCase):
         self.assertEqual(personal.suggestions("ru", "", "", "fl"), [])
         self.assertEqual(personal.suggestions("en", "", "", "fl%"), [])
 
+    def test_learned_typos_require_repetition_and_follow_direct_completions(self):
+        personal.set_enabled(True)
+        token = personal.session()
+        for lang, word, typo, direct in (("en", "merlux", "nerlux", "nerluxes"),
+                                         ("ru", "зорвик", "зоврик", "зоврики")):
+            with self.subTest(lang=lang):
+                personal.learn(token, lang, "", "", word)
+                self.assertEqual(personal.suggestions(lang, "", "", typo), [])
+                personal.learn(token, lang, "", "", word)
+                self.assertEqual(personal.suggestions(lang, "", "", typo), [word])
+                self.assertEqual(personal.suggestions(lang, "", "", word), [])
+                for _ in range(2):
+                    personal.learn(token, lang, "", "", direct)
+                self.assertEqual(personal.suggestions(lang, "", "", typo), [direct, word])
+        personal.set_enabled(False)
+        self.assertEqual(personal.suggestions("en", "", "", "nerlux"), [])
+        self.assertEqual(personal.suggestions("ru", "", "", "зоврик"), [])
+
     def test_pause_clear_and_late_word(self):
         personal.set_enabled(True)
         first = personal.session()
