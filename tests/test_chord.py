@@ -106,6 +106,21 @@ class KeyboardActions(unittest.TestCase):
             self.action.update(True, True)
         self.assertIsNone(self.action.stage)
 
+    def test_first_panel_can_finish_loading_after_two_seconds(self):
+        self.action._request(True)
+        self.now.return_value = 12.4
+        self.action._advance()
+        self.assertEqual(self.action.stage, "activate")
+        self.state["visible"] = True
+        self.action._advance()
+        self.assertIsNone(self.action.stage)
+        self.action._request(False)
+        self.assertAlmostEqual(self.action.deadline, 14.2)
+        self.state["visible"] = False
+        self.action._advance()
+        self.action._request(True)
+        self.assertAlmostEqual(self.action.deadline, 14.2)
+
     def test_steam_never_returns_on_overlapping_windows_or_timeout(self):
         self.action._request(True)
         with patch.object(chord, "_steam_keyboard", return_value="42"):

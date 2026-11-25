@@ -82,6 +82,42 @@ def write_completions(index, dictionary, spelling_index=None):
             os.utime(path, ns=(stamp, stamp))
 
 
+def write_morphology(index, dictionary):
+    empty = ".pragma library\nvar model = null\n"
+    if dictionary is None:
+        write_layout(index, empty)
+        return
+    try:
+        stamp = dictionary.stat().st_mtime_ns
+        if index.is_file() and index.stat().st_mtime_ns == stamp:
+            return
+        with gzip.open(dictionary, "rt", encoding="utf-8") as stream:
+            data = json.load(stream)
+        if not isinstance(data, dict) or data.get("format") != 1 or not isinstance(data.get("families"), list):
+            raise ValueError("unsupported Russian morphology format")
+        families = data["families"]
+        by_word = {}
+        for family_id, (lemma, _, forms) in enumerate(families):
+            # One spelling can have several readings in the same family.
+            surfaces = {form[0] for form in forms}
+            surfaces.add(lemma)
+            for word in sorted(surfaces):
+                by_word.setdefault(word, []).append(family_id)
+        companions = data.get("companions", {})
+        if not isinstance(companions, dict):
+            raise ValueError("invalid Russian adjective and noun combinations")
+        payload = json.dumps({"families": families, "byWord": by_word, "companions": companions},
+                             ensure_ascii=False, separators=(",", ":"))
+    except (OSError, EOFError, TypeError, IndexError, ValueError) as error:
+        print(f"Russian inflection suggestions unavailable: {error}", file=sys.stderr)
+        write_layout(index, empty)
+        return
+    # A single JSON string avoids compiling hundreds of thousands of QML
+    # JavaScript array and object literals when the Russian layout opens.
+    write_layout(index, ".pragma library\nvar model = JSON.parse(" + json.dumps(payload, ensure_ascii=False) + ")\n")
+    os.utime(index, ns=(stamp, stamp))
+
+
 def generate_layouts():
     layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     scale = trackpad_scale()
@@ -96,12 +132,13 @@ def generate_layouts():
         if not local_delegate.exists():
             local_delegate.symlink_to(DELEGATE)
         # QML resolves relative JS imports against the component's real path.
-        for component in ("DeckWordRow.qml", "DeckPrediction.js", "DeckPersonal.qml", "DeckLearning.js"):
+        for component in ("DeckWordRow.qml", "DeckPrediction.js", "DeckGrammar.js", "DeckPersonal.qml", "DeckLearning.js"):
             write_layout(dest / component, DELEGATE.with_name(component).read_text())
         code = "ru" if language.name == "ru_RU" else "en"
         dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
         write_predictions(dest / "DeckNext.js", dictionary.parent / f"{code}-next.json.gz")
         write_completions(dest / "DeckWords.js", dictionary, dest / "DeckSpelling.js")
+        write_morphology(dest / "DeckMorphData.js", dictionary.parent / "ru-morph.json.gz" if code == "ru" else None)
         for source in language.iterdir():
             target = dest / source.name
             if source.suffix != ".qml":

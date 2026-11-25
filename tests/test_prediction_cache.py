@@ -20,6 +20,32 @@ class PredictionCacheTests(unittest.TestCase):
             spec.loader.exec_module(keyboard)
         return keyboard
 
+    def test_morphology_cache_and_language_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keyboard = self.load_keyboard(directory)
+            source, index = root / "ru-morph.json.gz", root / "DeckMorphData.js"
+            def build(families, stamp):
+                source.write_bytes(gzip.compress(json.dumps({"format": 1, "families": families}).encode()))
+                os.utime(source, ns=(stamp, stamp))
+                keyboard.write_morphology(index, source)
+                payload = index.read_text().split("JSON.parse(", 1)[1].rstrip().removesuffix(")")
+                return json.loads(json.loads(payload))
+
+            forms = [["графа", "NOUN", [["графы", 2, 2, 1], ["графы", 1, 0, 2]]],
+                     ["граф", "NOUN", [["графы", 1, 0, 2]]]]
+            self.assertEqual(build(forms, 2_000_000_000)["byWord"]["графы"], [0, 1])
+            with patch.object(gzip, "open", side_effect=AssertionError("cache missed")):
+                keyboard.write_morphology(index, source)
+            self.assertEqual(build(forms[:1], 1_000_000_000)["byWord"]["графы"], [0])
+            source.write_bytes(b"broken")
+            with contextlib.redirect_stderr(io.StringIO()):
+                keyboard.write_morphology(index, source)
+            self.assertIn("var model = null", index.read_text())
+            source.unlink()
+            keyboard.write_morphology(index, None)  # English and fallback layouts
+            self.assertIn("var model = null", index.read_text())
+
     def test_replacing_dictionary_with_older_archive(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -5,6 +5,7 @@ import QtQuick.VirtualKeyboard
 import QtQuick.VirtualKeyboard.Components
 import "DeckWords.js" as Dictionary
 import "DeckSpelling.js" as Spelling
+import "DeckMorphData.js" as Morph
 import "DeckNext.js" as NextWords
 import "DeckPrediction.js" as Prediction
 
@@ -22,7 +23,7 @@ KeyboardRow {
     readonly property var wordContext: blocked ? null : Prediction.context(
         InputContext.surroundingText, InputContext.cursorPosition, InputContext.locale)
     readonly property var candidates: Prediction.suggestions(
-        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram, personal.words, Spelling.spelling)
+        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram, personal.words, Spelling.spelling, Morph.model)
 
     property DeckPersonal personalization: DeckPersonal {
         id: personal

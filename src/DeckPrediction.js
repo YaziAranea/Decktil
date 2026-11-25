@@ -1,4 +1,5 @@
 .pragma library
+.import "DeckGrammar.js" as Grammar
 
 // The Qt JavaScript engine on SteamOS does not support Unicode property
 // escapes. Explicit token boundaries also keep mixed scripts, IDs and URLs
@@ -43,18 +44,29 @@ function validWord(word, russian, partial) {
     return /^[a-z]+(?:['’\-][a-z]+)*$/i.test(value)
 }
 
-function precedingWords(text, pos, russian) {
+function precedingWords(text, pos, russian, limit, crossComma) {
     const result = []
-    for (let n = 0; n < 2 && pos > 0; ++n) {
+    for (let n = 0; n < limit && pos > 0; ++n) {
         const beforeSpace = pos
         while (pos > 0 && horizontalSpace(text.charAt(pos - 1)))
             --pos
         if (beforeSpace === pos)
             break
         // A conversational comma can join words in the same clause.
-        if (text.charAt(pos - 1) === ",")
+        if (crossComma && text.charAt(pos - 1) === ",")
             --pos
         const end = pos
+        // Numeric counts inform Russian agreement locally. Keep them out of
+        // phrase lookups, and do not read parts of IDs, decimals or times.
+        if (russian && !crossComma && /[0-9]/.test(text.charAt(pos - 1))) {
+            while (pos > 0 && end - pos < 9 && /[0-9]/.test(text.charAt(pos - 1)))
+                --pos
+            const before = text.charAt(pos - 1)
+            if (!boundary(before) || /[.,:]/.test(before))
+                break
+            result.unshift(text.slice(pos, end))
+            continue
+        }
         while (pos > 0 && end - pos < 64 && wordChar(text.charAt(pos - 1)))
             --pos
         const word = text.slice(pos, end)
@@ -76,10 +88,12 @@ function context(text, pos, locale) {
     const prefix = text.slice(start, pos)
     if (prefix && (!validWord(prefix, russian, true) || !wordStart(text, start)))
         return null
-    const previous = precedingWords(text, start, russian)
+    const previous = precedingWords(text, start, russian, 2, true)
     if (!prefix && !previous.length)
         return null
-    return { prefix: prefix, previous: previous, russian: russian }
+    // Keep the longer grammatical context inside the local prediction engine.
+    const history = russian ? precedingWords(text, start, true, 6, false) : []
+    return { prefix: prefix, previous: previous, russian: russian, history: history }
 }
 
 function lookup(table, key) {
@@ -195,7 +209,7 @@ function corrections(ctx, prefix, words, spelling, priorityGroups) {
                 .sort((a, b) => a.score - b.score || a.word.localeCompare(b.word)).slice(0, 3)
 }
 
-function suggestions(ctx, words, bigram, trigram, personal, spelling) {
+function suggestions(ctx, words, bigram, trigram, personal, spelling, morphology) {
     if (!ctx)
         return []
     const result = []
@@ -207,8 +221,16 @@ function suggestions(ctx, words, bigram, trigram, personal, spelling) {
         groups.push(lookup(trigram, ctx.previous.join(" ")))
     if (last >= 0)
         groups.push(lookup(bigram, ctx.previous[last]))
+    const priorityGroups = groups.slice()
+    const grammatical = ctx.russian && morphology
+        ? Grammar.candidates(ctx.history || ctx.previous, prefix, words, groups, spelling, morphology) : null
+    if (grammatical) {
+        if (grammatical.confident)
+            groups.length = 0
+        groups.unshift(grammatical.words)
+    }
     const contextual = groups.length
-    if (prefix.length >= 2)
+    if (prefix.length >= 2 && !(grammatical && grammatical.confident))
         groups.push(lookup(words, prefix.slice(0, 2)))
     let pinned = 0
     exact: for (let g = 0; g < groups.length; ++g) {
@@ -219,6 +241,7 @@ function suggestions(ctx, words, bigram, trigram, personal, spelling) {
             // in a two-letter bucket do not match the rest of this prefix.
             const lower = g === contextual ? word : canonical(word)
             if (lower.length <= prefix.length || !lower.startsWith(prefix) || seen.indexOf(lower) >= 0
+                    || (g > 0 && grammatical && grammatical.incompatible.has(lower))
                     || !validWord(word, ctx.russian, false))
                 continue
             seen.push(lower)
@@ -231,20 +254,21 @@ function suggestions(ctx, words, bigram, trigram, personal, spelling) {
             } else {
                 result.push(word)
             }
-            if (g < contextual)
+            if (g < contextual && (g > 0 || !grammatical || i < grammatical.pinned))
                 pinned = result.length
             if (result.length === 3)
                 break exact
         }
     }
-    if (!spelling || prefix.length < 3 || prefix.length > 32 || pinned === 3)
+    if ((grammatical && grammatical.confident) || !spelling || prefix.length < 3
+            || prefix.length > 32 || pinned === 3)
         return result
     if (result.length === 3 && result.every(word => {
         const rank = rankOf(spelling, canonical(word))
         return rank > 0 && rank < 2000
     }))
         return result
-    const nearby = corrections(ctx, prefix, words, spelling, groups.slice(0, contextual))
+    const nearby = corrections(ctx, prefix, words, spelling, priorityGroups)
     if (!nearby.length)
         return result
     // Retain contextual and competitive literal completions, leaving room for

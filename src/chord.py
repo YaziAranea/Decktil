@@ -85,6 +85,7 @@ class SteamChord:
         self.x = None
         self.armed = False
         self.want_open = False
+        self.panel_seen = False
         self.deadline = 0
         self.next_activate = 0.0
         self.echo_until = 0.0
@@ -302,7 +303,9 @@ class SteamChord:
             return
         self.want_open = show
         self.stage = "activate" if show else "dismiss"
-        self.deadline = time.monotonic() + 1.8
+        # KWin can accept the first activation while Qt is still loading
+        # language data. Keep the temporary visibility policy until it shows.
+        self.deadline = time.monotonic() + (5.0 if show and not self.panel_seen else 1.8)
         self.next_activate = 0.0
         if not self.timer:
             self.timer = GLib.timeout_add(25, self._advance)
@@ -322,6 +325,8 @@ class SteamChord:
         if not (state.get("available") and state.get("mode")):
             return self._finish()
         if bool(state.get("visible")) == self.want_open:
+            if self.want_open:
+                self.panel_seen = True
             return self._finish()
         if now < self.next_activate:
             return GLib.SOURCE_CONTINUE

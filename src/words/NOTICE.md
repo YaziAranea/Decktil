@@ -29,3 +29,17 @@ To regenerate the count snapshots, place the two original archives in one direct
 | --- | --- |
 | `eng_sentences_CC0.tsv.bz2` | `c2e2edd063a31cbbc8e416a4858225e934bbb0afff485031821e59f230ccf1ca` |
 | `rus_sentences_CC0.tsv.bz2` | `fb9e878c3d673c7ec5d7ec64d3ec0ae80a7df89f846f41e150144ba4bee4971f` |
+
+## Russian morphology
+
+`ru-morph.json.gz` contains inflections from the OpenCorpora morphological dictionary, revision 417150. Credit belongs to the OpenCorpora contributors. The input comes from the `pymorphy3-dicts-ru` distribution, version `2.4.417150.4580142`, whose dictionary data is licensed under Creative Commons Attribution–ShareAlike 3.0 Unported. Decktil selects and ranks families using its Russian completion list, derived from FrequencyWords. The resulting table is distributed under Creative Commons Attribution–ShareAlike 4.0 International. [OpenCorpora dictionary](https://opencorpora.org/dict.php) · [Packaged source and data license](https://pypi.org/project/pymorphy3-dicts-ru/2.4.417150.4580142/) · [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) · [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+
+The generator looks up exact dictionary spellings for nouns, full adjectives, pronouns and numerals. It omits proper names, abbreviations and marked archaic, distorted or erroneous readings. Each entry records a spelling, possible cases, gender and number. Homonymous families and distinct gender or number readings remain separate. All included adjective families and the first 2,500 families by frequency retain their full eligible paradigms. Other families contribute spellings present in Decktil’s completion list.
+
+The table distinguishes the second locative and the partitive from the standard prepositional and genitive. For example, the entry for `лесу` allows the dative, second locative and partitive. The entry for `лесе` allows the standard prepositional.
+
+The optional `companions` table ranks up to eight noun lemmas for each adjective. Training uses adjacent words from the same Tatoeba Russian CC0 export documented above and Decktil’s Russian chat examples. The generator checks case, number and singular gender, filters ambiguous parts of speech using OpenCorpora’s dictionary and tag probabilities, and rejects pairs with competing lemma readings. Rankings use the number of supporting observations, then the noun family’s frequency rank. [Tatoeba Russian CC0 export](https://downloads.tatoeba.org/exports/per_language/rus/rus_sentences_CC0.tsv.bz2) · [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/)
+
+The bundled `training/ru-rare-companions.tsv.gz` stores aggregate lemma-pair counts for inflected word pairs that fall below the recurring-count threshold in `ru-counts.tsv.gz`. The derived counts are distributed with the morphology table under CC BY-SA 4.0. To regenerate them from the pinned original, pass `--from-export /path/to/rus_sentences_CC0.tsv.bz2`.
+
+Run `python3 tools/build_morphology.py` to reproduce the table. The builder verifies and unpacks three pinned wheels in a temporary directory. It requires only Python’s standard library on the host. To rebuild offline, place the wheels for `pymorphy3==2.0.6`, `pymorphy3-dicts-ru==2.4.417150.4580142` and `dawg2-python==0.9.0` together and pass `--wheel-dir /path/to/wheels`. Decktil reads the bundled table offline. The builder is available under the [project’s MIT license](../../LICENSE).
