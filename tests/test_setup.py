@@ -32,6 +32,7 @@ class Packaging(unittest.TestCase):
             src = base / "package/src"
             src.mkdir(parents=True)
             for name in setup.RUNTIME_FILES:
+                (src / name).parent.mkdir(parents=True, exist_ok=True)
                 (src / name).write_text(f"fixture for {name}")
             (src / "other.py").write_text("unrelated")
             app = base / "share/deck-plasma-keyboard"

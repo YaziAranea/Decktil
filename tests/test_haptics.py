@@ -1,5 +1,6 @@
 """Check the Deck haptic wire format and session behavior without a controller."""
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -75,7 +76,90 @@ class TrackpadHaptics(unittest.TestCase):
             drive = effect.on_us * effect.repeats * 10 ** (effect.gain_db / 20)
             self.assertGreater(drive, previous_power)
             previous_power = drive
-            self.assertLess((effect.on_us + effect.off_us) * effect.repeats, 8000)
+            self.assertLess((effect.on_us + effect.off_us) * effect.repeats, 24000)
+
+    def test_pressure_has_a_light_detent_and_independent_commit_strength(self):
+        feedback = haptics.TrackpadFeedback()
+        with patch.object(feedback, "send") as send:
+            feedback.play(42, 0, 1, preload=1, forces=(1000, 0))
+            self.assertEqual(send.call_count, 1)
+            _, side, light = send.call_args.args
+            self.assertEqual(side, 1)
+            feedback.play(42, 3, 0, preload=3, forces=(2400, 9500))
+            left, right = [entry.args for entry in send.call_args_list[1:]]
+            self.assertEqual((left[1], right[1]), (1, 2))
+            self.assertLess(light.repeats, left[2].repeats)
+            self.assertLess(left[2].on_us, right[2].on_us)
+            self.assertLess(left[2].repeats, right[2].repeats)
+            self.assertEqual(left[2].gain_db, right[2].gain_db)
+            self.assertLess((right[2].on_us + right[2].off_us) * right[2].repeats, 24000)
+            feedback.play(42, 1, 0, forces=(2400, 0))
+            self.assertEqual(send.call_args.args, left)
+
+    def test_pressure_edges_and_rapid_same_key_double_click(self):
+        from unittest.mock import Mock
+        from gi.repository import GLib
+        import bridge
+
+        adapter = object.__new__(bridge.Bridge)
+        adapter.chord = Mock(stage=None, armed=False)
+        adapter.Frame = Mock()
+        adapter.feedback = haptics.TrackpadFeedback()
+        adapter.feedback.send = Mock()
+        adapter.fd = 42
+        adapter.ready = adapter.visible = True
+        adapter.locked = adapter.in_game = False
+        adapter.last_frame = adapter.last_down = adapter.physical_b = None
+        adapter.held_triggers = adapter.preloaded = adapter.frame_serial = 0
+        adapter.last_send = 0
+        adapter.recent_frames = {}
+        adapter.force_samples = [None, None]
+        adapter.click_timers = set()
+        rd, wr = os.pipe2(os.O_NONBLOCK)
+        def report(force, *, pressed=False, touch=True):
+            data = bytearray(64)
+            data[:4] = bytes((1, 0, 9, 64))
+            data[10] = int(touch) << 3 | int(pressed) << 1
+            struct.pack_into("<H", data, 56, force)
+            os.write(wr, data)
+            adapter.read_reports(rd, GLib.IO_IN)
+        try:
+            # Keep all 13 samples within a single visual frame.
+            with patch("time.monotonic", return_value=1.0):
+                report(0)
+                report(1100); report(1100); report(900)
+                report(2400, pressed=True); report(3000, pressed=True)
+                report(200); report(900); report(1100)
+                report(2400, pressed=True); report(9500, pressed=True); report(300, pressed=False)
+                report(0, pressed=True, touch=False); report(0)
+                frames = [row.args for row in adapter.Frame.call_args_list]
+                self.assertEqual([row[5] for row in frames if row[5]], [4, 1, 4, 1])
+                self.assertEqual([row[6] for row in frames], [0, 0, 1, 0, 0, 1, 0, 0, 0])
+                for row in frames:
+                    if row[5]:
+                        adapter.Feedback(row[9], row[5] & 3, row[5] & 12)
+                        adapter.Feedback(row[9], row[5] & 3, row[5] & 12)
+                pulses = [r.args[2] for r in adapter.feedback.send.call_args_list]
+                self.assertEqual(len(pulses), 4)
+                self.assertEqual(pulses[0], pulses[2])
+                self.assertLess(pulses[1].repeats, pulses[3].repeats)
+            with patch("time.monotonic") as clock, patch.object(GLib, "timeout_add", return_value=19) as delay:
+                clock.return_value = 2.0
+                report(2400, pressed=True)
+                serial = adapter.Frame.call_args.args[9]
+                adapter.Feedback(serial, 1, 0)
+                self.assertEqual(adapter.feedback.send.call_count, 4)
+                milliseconds, callback = delay.call_args.args
+                self.assertEqual(milliseconds, 8)
+                clock.return_value = 2.004
+                report(9500, pressed=True)
+                clock.return_value = 2.008
+                callback()
+                self.assertEqual(adapter.feedback.send.call_args.args[2], pulses[3])
+                self.assertFalse(adapter.click_timers)
+        finally:
+            os.close(wr)
+            os.close(rd)
 
     def test_write_failure_suppresses_only_current_session(self):
         feedback = haptics.TrackpadFeedback()

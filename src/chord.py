@@ -67,7 +67,7 @@ def _steam_request(action):
 
 
 class SteamChord:
-    """Call update(guide_down, x_down) for HID reports and reset() on disconnect."""
+    """Toggle Plasma once per physical desktop X or Steam+X press."""
 
     def __init__(self, session_bus):
         self.enabled = (
@@ -86,15 +86,19 @@ class SteamChord:
         self.armed = False
         self.want_open = False
         self.deadline = 0
-        self.previous_window = None
-        self.restore_retried = False
+        self.next_activate = 0.0
+        self.echo_until = 0.0
+        self.recent_log_open = None
+        self.close_after = 0.0
+        self.binding_path = None
+        self.binding_stamp = None
+        self.binding_buttons = set()
         self.next_reconcile = 0
         self.log_identity = None
         self.log_offset = 0
         self.log_fragment = b""
         self.stock_open = False
-        self.ignore_restore_until = 0
-        self.overlap_since = None
+        self.last_desktop_osk = None
         state_dir = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
         self.mode_record = state_dir / "deck-plasma" / "chord-mode"
         if self.enabled:
@@ -110,6 +114,11 @@ class SteamChord:
         self.stage = None
         self.x = None
         self.armed = False
+        self.echo_until = 0.0
+        self.recent_log_open = None
+        self.stock_open = False
+        self.last_desktop_osk = None
+        self.binding_path = None
 
     def _state(self):
         try:
@@ -159,22 +168,18 @@ class SteamChord:
             log.warning("Could not restore the keyboard visibility policy: %s", error)
 
     def reconcile(self, visible):
-        """Call periodically with the current KWin panel visibility."""
-        if not (visible and self.enabled) or self.armed or self.stage:
-            return
+        """Remove a lingering Steam keyboard without dismissing the editor's panel."""
         now = time.monotonic()
-        if now < self.next_reconcile:
+        if not self.enabled or now < self.next_reconcile:
             return
         self.next_reconcile = now + 0.4
-        if _steam_keyboard() is not None:
-            # A new Steam window can become viewable just before the matching
-            # Desktop input event is appended. Give the event reader priority.
-            if self.overlap_since is None:
-                self.overlap_since = now
-            elif now - self.overlap_since > 0.6:
-                self._hide_panel()
-        else:
-            self.overlap_since = None
+        if (self.stock_open or visible) and _steam_keyboard() is not None:
+            self._close_stock(now)
+
+    def _close_stock(self, now):
+        if now >= self.close_after:
+            self.close_after = now + 0.25
+            _steam_request("close")
 
     def poll_desktop_actions(self, allowed=True):
         """Consume only new Steam input log events. Run from the main loop."""
@@ -202,13 +207,17 @@ class SteamChord:
             self.log_fragment = lines.pop()
             opening = False
             for line in lines:
+                if b"Path for App ID 413080," in line:
+                    self.binding_path = None
                 match = OSK_EVENT.search(line)
                 if not match:
                     continue
                 active, app = match.groups()
                 desktop = (int(app) & 0xffffffff) in (mapping.DESKTOP, mapping.KEYBOARD)
                 current = active == b"1" and desktop
-                opening = current and (opening or not self.stock_open)
+                # The compositor can dismiss the popup before we read the log.
+                # A close later in the same batch must not erase the request.
+                opening |= current and not self.stock_open
                 self.stock_open = current
             if opening and allowed and not mapping.running_game():
                 self._desktop_opened()
@@ -218,60 +227,85 @@ class SteamChord:
 
     def _desktop_opened(self):
         now = time.monotonic()
-        if self.stage == "verify_steam" or now < self.ignore_restore_until:
-            self.ignore_restore_until = 0
-            return
-        if self.stage not in (None, "wait_steam"):
-            return
         state = self._state()
         if not (state.get("available") and state.get("mode")):
             return
-        if not self.armed and self.stage is None:
-            self.want_open = not bool(state.get("visible"))
-        self.armed = False
-        if not self.want_open:
-            self._hide_panel()
-        # The authoritative Steam controller event makes this branch independent
-        # of the physical HID report, title language and editor input protocol.
-        self.previous_window = None
-        _steam_request("close")
-        self._set_stage("wait_closed", 0.8)
-        if not self.timer:
-            self.timer = GLib.timeout_add(45, self._advance)
+        self.last_desktop_osk = now
+        self._close_stock(now)
+        # Steam's action is a second observation of either physical shortcut.
+        # Only a physical press toggles. A log-only request opens the panel.
+        if self.armed or now <= self.echo_until:
+            self._request(self.want_open)
+        else:
+            self.recent_log_open = (now, self.want_open if self.stage else bool(state.get("visible")))
+            self._request(True)
 
     def _hide_panel(self):
+        self.properties.Set(KEYBOARD_INTERFACE, "active", dbus.Boolean(False, variant_level=1), timeout=0.4)
+
+    def _desktop_button_enabled(self, button):
+        # Intercept only known, unambiguous bindings in the desktop layout.
         try:
-            self.properties.Set(KEYBOARD_INTERFACE, "active", dbus.Boolean(False, variant_level=1), timeout=0.4)
-        except dbus.DBusException as error:
-            log.warning("Could not hide Plasma Keyboard: %s", error)
+            if self.binding_path is None or not self.binding_path.is_file():
+                _, self.binding_path = mapping.desktop_source()
+            stat = self.binding_path.stat()
+            stamp = (stat.st_ino, stat.st_mtime_ns)
+            if stamp != self.binding_stamp:
+                layout = self.binding_path.read_text()
+                self.binding_buttons = {name for name, finder in (("x", mapping.keyboard_x_binding),
+                                                                  ("b", mapping.keyboard_b_binding))
+                                        if finder(layout)}
+                self.binding_stamp = stamp
+            return button in self.binding_buttons
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    def _desktop_x_enabled(self):
+        return self._desktop_button_enabled("x")
+
+    def desktop_b_closes_keyboard(self):
+        return self._desktop_button_enabled("b")
 
     def update(self, guide_down, x_down):
         if not self.enabled:
             return
-        if self.x is False and x_down and guide_down and self.stage is None:
-            try:
-                desktop = not mapping.running_game()
-            except OSError:
-                desktop = False
-            if not desktop:
-                self.x = True
-                return
-            state = self._state()
-            if state.get("available") and state.get("mode"):
-                if _steam_keyboard() is None:
-                    self.want_open = not bool(state.get("visible"))
-                    self.armed = True
-        if self.armed and (not x_down or not guide_down):
+        previous, self.x = self.x, bool(x_down)
+        now = time.monotonic()
+        if self.armed and not x_down:
             self.armed = False
-            if not self.want_open:
-                self._hide_panel()
-            self._set_stage("wait_steam", 1.6)
-            self.timer = GLib.timeout_add(45, self._advance)
-        self.x = bool(x_down)
+            self.echo_until = now + 0.85
+        if previous is not False or not x_down:
+            return
+        try:
+            if mapping.running_game():
+                return
+        except OSError:
+            return
+        state = self._state()
+        if not (state.get("available") and state.get("mode")):
+            return
+        if not guide_down and not ((state.get("visible") or state.get("activeClientSupportsTextInput"))
+                                   and self._desktop_x_enabled()):
+            return
+        was_visible = self.want_open if self.stage else bool(state.get("visible"))
+        # A Steam log notification can beat the HID callback for the very
+        # same press. Toggle against the visibility before that notification.
+        if self.recent_log_open is not None and now - self.recent_log_open[0] < 0.25:
+            was_visible = self.recent_log_open[1]
+        self.recent_log_open = None
+        self.armed = True
+        self.echo_until = now + 0.85
+        self._request(not was_visible)
 
-    def _set_stage(self, stage, duration):
-        self.stage = stage
-        self.deadline = time.monotonic() + duration
+    def _request(self, show):
+        if self.stage and self.want_open == show:
+            return
+        self.want_open = show
+        self.stage = "activate" if show else "dismiss"
+        self.deadline = time.monotonic() + 1.8
+        self.next_activate = 0.0
+        if not self.timer:
+            self.timer = GLib.timeout_add(25, self._advance)
 
     def _finish(self):
         self._restore_mode()
@@ -279,82 +313,25 @@ class SteamChord:
         self.timer = 0
         return GLib.SOURCE_REMOVE
 
-    def _fallback(self):
-        self._restore_mode()
-        if _steam_keyboard() is not None:
-            return self._finish()
-        self.restore_retried = False
-        self.ignore_restore_until = time.monotonic() + 3
-        _steam_request("open")
-        self._set_stage("verify_steam", 2)
-        return GLib.SOURCE_CONTINUE
-
     def _advance(self):
         now = time.monotonic()
-        if self.stage == "wait_steam":
-            wid = _steam_keyboard()
-            if wid is not None:
-                state = self._state()
-                if not (state.get("available") and state.get("mode")):
-                    return self._finish()
-                self.previous_window = wid
-                _steam_request("close")
-                self._set_stage("wait_closed", 0.65)
-            elif now >= self.deadline:
-                if not self.want_open:
-                    return self._finish()
-                self._set_stage("activate", 0.6)
-        elif self.stage == "wait_closed":
-            wid = _steam_keyboard()
-            if wid is None and not self.stock_open:
-                self._set_stage("activate", 0.6)
-            elif now >= self.deadline:
-                if wid is None or self.previous_window not in (None, wid):
-                    return self._finish()
-                # EWMH close is a fallback for Steam builds that ignore the URI.
-                if _xdotool("windowquit", wid) is None:
-                    return self._finish()
-                self.previous_window = ""
-                self.deadline = now + 0.6
-        elif self.stage == "activate":
-            state = self._state()
-            try:
-                if not self.want_open:
-                    self._hide_panel()
-                    return self._finish()
-                # The Steam popup can briefly take focus. Give the original
-                # editor time to regain its Wayland text-input context.
-                if state.get("visible"):
-                    return self._finish()
-                if state.get("available") and (
-                    state.get("activeClientSupportsTextInput") or now >= self.deadline
-                ) and state.get("mode"):
-                    self._allow_mouse_activation(state)
-                    self.panel.forceActivate(timeout=0.4)
-                    self._set_stage("verify", 0.8)
-                elif now >= self.deadline:
-                    log.info("Editor did not regain text input; restoring the Steam keyboard")
-                    return self._fallback()
-            except (dbus.DBusException, OSError, subprocess.SubprocessError) as error:
-                log.warning("Could not toggle Plasma Keyboard: %s", error)
-                if self.want_open:
-                    return self._fallback()
-                return self._finish()
-        elif self.stage == "verify":
-            if self._state().get("visible"):
-                return self._finish()
-            if now >= self.deadline:
-                log.warning("Plasma Keyboard did not appear; restoring the Steam keyboard")
-                return self._fallback()
-        elif self.stage == "verify_steam":
-            if self.stock_open or _steam_keyboard() is not None:
-                return self._finish()
-            if now >= self.deadline:
-                if self.restore_retried:
-                    log.error("No Steam keyboard appeared after two open requests")
-                    return self._finish()
-                self.restore_retried = True
-                self.ignore_restore_until = now + 3
-                _steam_request("open")
-                self.deadline = now + 2
+        state = self._state()
+        if now >= self.deadline:
+            log.warning("Plasma keyboard did not reach requested visibility: %s", self.want_open)
+            return self._finish()
+        if not (state.get("available") and state.get("mode")):
+            return self._finish()
+        if bool(state.get("visible")) == self.want_open:
+            return self._finish()
+        if now < self.next_activate:
+            return GLib.SOURCE_CONTINUE
+        self.next_activate = now + 0.22
+        try:
+            if self.want_open:
+                self._allow_mouse_activation(state)
+                self.panel.forceActivate(timeout=0.4)
+            else:
+                self._hide_panel()
+        except (dbus.DBusException, OSError, subprocess.SubprocessError) as error:
+            log.debug("Plasma keyboard action pending: %s", error)
         return GLib.SOURCE_CONTINUE

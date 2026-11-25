@@ -28,7 +28,9 @@ UNIT = CONFIG/"systemd/user"/UNIT_NAME
 ROOT = Path.home()/".steam/steam"
 TEMPLATE = ROOT/"controller_base/templates/deck_plasma_keyboard.vdf"
 ABSENT = "__deck_plasma_unset__"
-RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py", "DeckSelector.qml")
+RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py",
+                 "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml",
+                 "words/ru.txt.gz", "words/en.txt.gz", "words/NOTICE.md")
 
 
 def cmd(*args, **kwargs):

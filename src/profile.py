@@ -113,9 +113,11 @@ def active_app(index):
 
 def selected_path(index, app_id):
     for line in recent_log("controller_ui.txt"):
-        match = LOADED.search(line)
+        match = CONFIG_LOAD.search(line)
         if match and int(match[1]) == app_id and int(match[2]) == index:
-            return (ROOT / match[3]).resolve()
+            # Only the most recent selection is evidence of actual ownership.
+            local = LOADED.search(line)
+            return (ROOT / local[3]).resolve() if local else None
     return None
 
 DESKTOP_LOADED = re.compile(r"Loaded Config for [^:]*?Path for App ID (\d+), Controller (\d+): (.+)")
@@ -134,10 +136,71 @@ def desktop_source():
     raise RuntimeError("No current Steam Desktop Neptune layout found. Save a personal Desktop Layout in Steam first.")
 
 
+def default_button_binding(layout, button_name, expected_action):
+    """Find a sole unambiguous Full_Press action in the default desktop action set."""
+    tokens = (match for match in re.finditer(r'"(?:\\.|[^"\\])*"|[{}]|//[^\n]*', layout)
+              if not match[0].startswith("//"))
+
+    def read_pairs():
+        pairs = []
+        for name in tokens:
+            if name[0] == "}":
+                break
+            value = next(tokens, None)
+            if value is None or not name[0].startswith('"'):
+                raise ValueError("Invalid Steam Input layout")
+            pairs.append((name, read_pairs() if value[0] == "{" else value))
+        return pairs
+
+    def children(pairs, key):
+        return [v for n, v in pairs if n[0][1:-1] == key] if isinstance(pairs, list) else []
+
+    def first(pairs, key):
+        return next(iter(children(pairs, key)), None)
+
+    def text(value):
+        return value[0][1:-1] if isinstance(value, re.Match) else None
+
+    root = first(read_pairs(), "controller_mappings")
+    default = next((p for p in children(root, "preset") if text(first(p, "id")) == "0"), None)
+    sources = first(default, "group_source_bindings") or []
+    diamond = next((text(group) for group, source in sources if text(source) == "button_diamond active"), None)
+    if diamond is None:
+        return None
+    group = next((g for g in children(root, "group") if text(first(g, "id")) == diamond), None)
+    button = first(first(group, "inputs"), button_name)
+    activators = first(button, "activators") or []
+    if not isinstance(activators, list) or [text(name) for name, _ in activators] != ["Full_Press"]:
+        return None
+    bindings = first(activators[0][1], "bindings")
+    if not isinstance(bindings, list) or len(bindings) != 1:
+        return None
+    name, value = bindings[0]
+    binding = text(value)
+    if text(name) == "binding" and binding and binding.split(",", 1)[0].strip() == expected_action:
+        return name.start(), value.end()
+    return None
+
+
+def keyboard_x_binding(layout):
+    return default_button_binding(layout, "button_x", "controller_action SHOW_KEYBOARD")
+
+
+def keyboard_b_binding(layout):
+    return default_button_binding(layout, "button_b", "key_press ESCAPE")
+
+
 def inherited_template(source):
     original = source.read_text()
     if '"controller_neptune"' not in original or '"group_source_bindings"' not in original:
         raise RuntimeError("Unexpected Steam Deck desktop configuration")
+    # Handle the two standard panel actions directly. Leave custom actions
+    # intact, including alternate activators and chords on the same button.
+    for find_binding in (keyboard_x_binding, keyboard_b_binding):
+        binding = find_binding(original)
+        if binding:
+            first, last = binding
+            original = original[:first] + original[last:]
     result = ACTION.sub(r'\1inactive\2', original).replace(str(source), str(TEMPLATE.resolve()))
     return re.sub(r'(?m)^(\s*"title"\s*)"[^"\n]*"', r'\1"Deck Plasma Keyboard"', result, count=1)
 
@@ -176,38 +239,151 @@ def valid(state):
             and active_app(state["index"]) == KEYBOARD
             and selected_path(state["index"], KEYBOARD) == TEMPLATE.resolve())
 
+STEAM_UI = 769
+OSK_RECOVERY_SECONDS = 5
+STEAM_OSK = re.compile(r"Set OSK active ([01]) and appid (-?\d+)$")
+CONFIG_LOAD = re.compile(r"Loaded Config for .*?Path for App ID (\d+), Controller (\d+):")
+
+
+def osk_displaced(index, event_at, pinned):
+    """Prove Steam's OSK just left a spurious URL-forced 769 profile."""
+    if event_at is None:
+        return False
+    age = time.monotonic() - event_at
+    if not 0 <= age <= OSK_RECOVERY_SECONDS:
+        return False
+    # Steam timestamps have one-second resolution. Anchor the log to the
+    # observed desktop opening, never a previous keyboard in this session.
+    earliest = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - age - 1))
+    fallback = "OnFocusWindowChanged URL Forcing to window type: k_EWindowTypeGame, 769"
+    stock_focus = "OnFocusWindowChanged On Screen Keyboard Forcing to window type: KB ActionSet, AppID 769"
+    forced = closed = keyboard_focus = loaded = False
+    for line in recent_log("controller_ui.txt"):
+        if line[1:20] < earliest:
+            return False
+        focus = "OnFocusWindowChanged" in line
+        if focus and line.endswith(fallback) and not closed:
+            forced = True
+        elif focus and line.endswith(stock_focus) and closed:
+            keyboard_focus = True
+        elif focus:
+            # A game, Steam library or another real focus transition wins.
+            return False
+        config = CONFIG_LOAD.search(line)
+        if config and int(config[2]) == index:
+            if int(config[1]) != STEAM_UI:
+                return False
+            loaded = True
+        match = STEAM_OSK.search(line)
+        if not match:
+            continue
+        active, app = int(match[1]), int(match[2]) & 0xffffffff
+        if not closed:
+            if not forced or active != 0 or app != STEAM_UI:
+                return False
+            closed = True
+        else:
+            if not (active and keyboard_focus and loaded):
+                return False
+            if app != DESKTOP and not (pinned and app == KEYBOARD
+                                       and selected_path(index, KEYBOARD) == TEMPLATE.resolve()):
+                return False
+            # The underlying foreground window can change without another
+            # controller activation, for example when the user opens Steam.
+            try:
+                foreground = subprocess.run(
+                    ["/usr/bin/xdotool", "getactivewindow", "getwindowclassname"],
+                    capture_output=True, text=True, timeout=.4)
+            except (OSError, subprocess.SubprocessError):
+                return False
+            return foreground.stdout.strip().lower() not in {"steam", "steamwebhelper"}
+    return False
+
+
+def forced_profile():
+    """Return Steam's persistent URL-selected app, independent of the Guide action set."""
+    for line in recent_log("controller_ui.txt"):
+        if "OnFocusWindowChanged" not in line:
+            continue
+        if "On Screen Keyboard Forcing" in line:
+            # The native OSK can briefly cover a still-pinned helper.
+            continue
+        match = re.search(r"OnFocusWindowChanged URL Forcing .*?, (?:AppID )?(-?\d+)$", line)
+        # An automatic focus decision supersedes an older explicit pin.
+        return (int(match[1]) & 0xffffffff) if match else None
+    return None
+
+
+def orphaned_index():
+    """Find our held-over helper mapping while the calling bridge has a hidden panel."""
+    try:
+        if KEYBOARD is None or not steam_pid() or running_game():
+            return None
+        index, _ = desktop_source()
+        if (active_app(index) == KEYBOARD
+                and selected_path(index, KEYBOARD) == TEMPLATE.resolve()
+                and forced_profile() in (None, 0, KEYBOARD)):
+            return index
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
+def restore_desktop(index):
+    # Only callers that just proved the active mapping belongs to the hidden
+    # keyboard (or a verified displaced OSK) may briefly select Desktop.
+    try:
+        force(DESKTOP)
+        if not wait_for(index, DESKTOP):
+            raise RuntimeError("Steam did not restore its desktop mapping")
+    finally:
+        force(0)
+    if not wait_for(index, DESKTOP, 0.24) and orphaned_index() == index:
+        raise RuntimeError("Steam returned to the hidden keyboard mapping")
+
+
 def release():
     if not STATE.is_file():
+        index = orphaned_index()
+        if index is not None:
+            restore_desktop(index)
         return
     state = json.loads(STATE.read_text())
     if steam_pid() == state["pid"]:
         index = state["index"]
-        was_ours = active_app(index) == KEYBOARD
-        force(0)
-        if was_ours and not running_game() and not wait_for(index, DESKTOP, 0.18):
-            # Steam builds can retain the last mapping until a focus event.
-            if active_app(index) == KEYBOARD:
-                try:
-                    force(DESKTOP)
-                    if not wait_for(index, DESKTOP):
-                        raise RuntimeError("Steam did not restore its desktop mapping")
-                finally:
-                    force(0)
+        current = active_app(index)
+        # A close may beat the bridge's re-entry callback. Its existing lease
+        # lets us check for a recent OSK round trip without taking over another UI.
+        window_start = time.monotonic() - (OSK_RECOVERY_SECONDS - 0.5)
+        displaced = (current == STEAM_UI and not running_game() and
+                     osk_displaced(index, window_start, True))
+        if forced_profile() == KEYBOARD or displaced:
+            # Guide or a game can mask our URL pin. Clearing our own pin here
+            # lets Steam choose what receives the input when Guide is released.
+            force(0)
+            if not running_game() and not wait_for(index, DESKTOP, 0.18):
+                displaced = (active_app(index) == STEAM_UI and
+                             osk_displaced(index, window_start, True))
+                if displaced or orphaned_index() == index:
+                    restore_desktop(index)
+        elif orphaned_index() == index:
+            restore_desktop(index)
     STATE.unlink(missing_ok=True)
 
-def enter():
+
+def enter(event_at=None):
     if KEYBOARD is None:
         raise RuntimeError("Run setup.py enable after selecting the template in Steam")
-    if STATE.is_file():
-        state = json.loads(STATE.read_text())
-        if valid(state):
-            return
-        release()
     pid = steam_pid()
     if pid is None or running_game():
         raise RuntimeError("Steam desktop configuration unavailable")
+    state = json.loads(STATE.read_text()) if STATE.is_file() else None
+    if state and valid(state):
+        return
     index, source = desktop_source()
-    if active_app(index) != DESKTOP:
+    pinned = bool(state and state["pid"] == pid and state["index"] == index)
+    current = active_app(index)
+    if current != DESKTOP and not (current == STEAM_UI and osk_displaced(index, event_at, pinned)):
         raise RuntimeError("Steam Deck is not using its desktop configuration")
     expected = inherited_template(source)
     refresh = not TEMPLATE.is_file() or TEMPLATE.read_text() != expected
@@ -236,17 +412,20 @@ def enter():
 
 
 def main():
-    cmd = sys.argv[1] if len(sys.argv) == 2 else ""
+    args = sys.argv[1:]
+    cmd = args[0] if len(args) == 1 else ""
     with (RUNTIME / "deck-plasma-steam-profile.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if cmd == "enter":
+        if len(args) == 2 and args[0] == "enter-after-osk":
+            enter(float(args[1]))
+        elif cmd == "enter":
             enter()
         elif cmd == "leave":
             release()
         elif cmd == "status":
             return 0 if STATE.is_file() and valid(json.loads(STATE.read_text())) else 1
         else:
-            raise RuntimeError("Expected enter, leave or status")
+            raise RuntimeError("Expected enter, enter-after-osk TIMESTAMP, leave or status")
     return 0
 
 if __name__ == "__main__":

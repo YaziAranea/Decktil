@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """Give Plasma's own RU/EN layouts a controller input delegate for this process."""
 import os
+import gzip
+import json
 from pathlib import Path
 import re
 import sys
@@ -28,6 +30,14 @@ def trackpad_scale():
     return 1.0
 
 
+def write_layout(path, body):
+    if not path.is_symlink() and path.is_file() and path.read_text() == body:
+        return
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as file:
+        file.write(body)
+    os.replace(file.name, path)
+
+
 def generate_layouts():
     layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     scale = trackpad_scale()
@@ -41,6 +51,22 @@ def generate_layouts():
         local_delegate = dest / "DeckSelector.qml"
         if not local_delegate.exists():
             local_delegate.symlink_to(DELEGATE)
+        row = dest / "DeckWordRow.qml"
+        # QML resolves relative JS imports against the component's real path.
+        write_layout(row, DELEGATE.with_name(row.name).read_text())
+        code = "ru" if language.name == "ru_RU" else "en"
+        dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
+        index = dest / "DeckWords.js"
+        if not index.exists() or index.stat().st_mtime_ns < dictionary.stat().st_mtime_ns:
+            buckets = {}
+            with gzip.open(dictionary, "rt", encoding="utf-8") as words:
+                for line in words:
+                    word = line.strip()
+                    buckets.setdefault(word[:2], []).append(word)
+            with tempfile.NamedTemporaryFile("w", dir=dest, delete=False) as file:
+                file.write(".pragma library\nvar words = ")
+                json.dump(buckets, file, ensure_ascii=False, separators=(",", ":"))
+            os.replace(file.name, index)
         for source in language.iterdir():
             target = dest / source.name
             if source.suffix != ".qml":
@@ -52,11 +78,9 @@ def generate_layouts():
             body = re.sub(r"(?m)^([ \t]*)KeyboardLayout \{", lambda m:
                 m[0] + "\n" + m[1] + "    id: deckLayout\n" + m[1] +
                 f"    property QtObject deckSelector: DeckSelector {{ layout: deckLayout; typingScale: {scale} }}", body)
-            if target.is_file() and target.read_text() == body:
-                continue
-            with tempfile.NamedTemporaryFile("w", dir=dest, delete=False) as file:
-                file.write(body)
-            os.replace(file.name, target)
+            if source.name == "main.qml":
+                body = re.sub(r"(?m)^(\s*)KeyboardRow \{", r"\1DeckWordRow {}\n\1KeyboardRow {", body, count=1)
+            write_layout(target, body)
 
 
 try:

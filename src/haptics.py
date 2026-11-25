@@ -20,12 +20,13 @@ def selection_pulse(kind, intensity, gain):
     """Approximate Steam's tick/click choice with a short Deck pulse train."""
     if kind == 0:
         return None
-    # Firmware intensity 0 means system default. Keep every train under 8 ms.
+    # Firmware intensity 0 means system default. The longer intervals separate
+    # a positive key click from the brief navigation and pressure cues.
     level = intensity or 2
     if kind == 1:
-        return Pulse(400 + 40 * level, 460, 2, gain)
+        return Pulse(620 + 60 * level, 1100, 2, gain)
     if kind == 2:
-        return Pulse(500 + 25 * level, 630, 6, gain)
+        return Pulse(940 + 80 * level, 1550, 4, gain)
     raise ValueError("Unsupported haptic type")
 
 
@@ -33,6 +34,7 @@ def selection_pulse(kind, intensity, gain):
 PRESETS = {0: None, 1: selection_pulse(1, 2, -2), 2: selection_pulse(2, 4, -5),
            3: selection_pulse(2, 3, -3)}
 TICK = Pulse(300, 0, 1, -12)
+PRELOAD = Pulse(700, 850, 2, -12)
 HIDIOCSFEATURE_65 = 0xC0414806  # _IOC(READ|WRITE, 'H', 6, 65), Linux x86_64
 SETTINGS = re.compile(r'^\s*"keyboard_haptic_(preset|custom)"\s+("(?:\\.|[^"\\])*")')
 log = logging.getLogger(__name__)
@@ -69,8 +71,8 @@ def steam_keyboard_preset(userdata=None):
 
 def feature_report(side, effect):
     """Encode Linux hid-steam's ID_TRIGGER_HAPTIC_PULSE for a Deck hidraw fd."""
-    if (side not in (0, 1, 2) or not 1 <= effect.on_us <= 1000
-            or not 0 <= effect.off_us <= 1000 or not 1 <= effect.repeats <= 6
+    if (side not in (0, 1, 2) or not 1 <= effect.on_us <= 1800
+            or not 0 <= effect.off_us <= 1600 or not 1 <= effect.repeats <= 7
             or not -24 <= effect.gain_db <= 6):
         raise ValueError("Invalid Deck trackpad feedback")
     data = bytearray(65)
@@ -90,23 +92,39 @@ class TrackpadFeedback:
         self.next_tick = [0.0, 0.0]
         self.unavailable = False
 
-    def play(self, fd, clicks, hover):
+    def play(self, fd, clicks, hover, preload=0, forces=(0, 0)):
         if fd is None or self.unavailable or self.preset is None:
             return
         now = time.monotonic()
-        # A click takes precedence. Keep subsequent navigation ticks clear of it.
+        # A click takes precedence even if the previous click was only one
+        # controller report ago. Only navigation is rate-limited.
         ticks = 0
         for side in (0, 1):
             bit = 1 << side
             if clicks & bit:
                 self.next_tick[side] = now + .10
+            elif preload & bit:
+                self.next_tick[side] = now + .045
             elif hover & bit and now >= self.next_tick[side]:
                 ticks |= bit
                 self.next_tick[side] = now + .045
         try:
             # Respect quiet custom settings for navigation as well as selection.
             navigation = TICK._replace(gain_db=max(-24, min(TICK.gain_db, self.preset.gain_db - 6)))
-            for mask, effect in ((clicks, self.preset), (ticks, navigation)):
+            pressure_tick = PRELOAD._replace(gain_db=max(-24, min(PRELOAD.gain_db, self.preset.gain_db - 9)))
+            by_effect = {}
+            for side, force in enumerate(forces):
+                bit = 1 << side
+                if clicks & bit:
+                    # Weight the useful portion of a normal thumb press. The
+                    # sensor's full 32767 range includes very hard squeezing.
+                    level = max(0, min(3, int(force) // 2200))
+                    effect = self.preset._replace(on_us=self.preset.on_us + level * 130,
+                                                  repeats=self.preset.repeats + level)
+                    by_effect[effect] = by_effect.get(effect, 0) | bit
+            for effect, mask in by_effect.items():
+                self.send(fd, mask, effect)
+            for mask, effect in ((preload & ~clicks, pressure_tick), (ticks, navigation)):
                 if mask:
                     self.send(fd, mask, effect)
         except OSError as error:
