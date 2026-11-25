@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Set up the Plasma Keyboard adapter for one SteamOS Desktop user."""
 import argparse
+import ast
+import configparser
 import fcntl
 import hashlib
 import importlib.util
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 from steam_shortcuts import helper_records, lookup
 
@@ -37,15 +41,23 @@ def cmd(*args, **kwargs):
     return subprocess.run(args,check=True,**kwargs)
 
 
-def method():
-    value=cmd("kreadconfig6","--file","kwinrc","--group","Wayland","--key","InputMethod",
-              "--default",ABSENT,capture_output=True,text=True).stdout.rstrip("\n")
+def kwin_setting(key):
+    value = cmd("kreadconfig6", "--file", "kwinrc", "--group", "Wayland", "--key", key,
+                "--default", ABSENT, capture_output=True, text=True).stdout.rstrip("\n")
     return None if value == ABSENT else value
 
 
+def set_kwin_setting(key, value):
+    cmd("kwriteconfig6", "--notify", "--file", "kwinrc", "--group", "Wayland", "--key", key,
+        "--delete" if value is None else str(value))
+
+
+def method():
+    return kwin_setting("InputMethod")
+
+
 def set_method(value):
-    cmd("kwriteconfig6","--notify","--file","kwinrc","--group","Wayland","--key","InputMethod",
-        "--delete" if value is None else value)
+    set_kwin_setting("InputMethod", value)
 
 
 def save(path, data, mode=0o600):
@@ -267,14 +279,299 @@ def enable(state):
     print("Enabled. In Plasma Keyboard settings select English (US) and Russian to use both layouts.")
 
 
+MODE_POLICY = "VirtualKeyboardMode"
+VK = "org.kde.kwin.VirtualKeyboard"
+POPUP_SCRIPT = "deck-plasma-keyboard-popup"
+
+
+def mode_file():
+    # Keep mode preferences independent of installer ownership. A recognized
+    # manual installation must never acquire an install manifest implicitly.
+    return STATE_DIR / "mode.json"
+
+
+def load_mode():
+    path = mode_file()
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def store_mode(settings):
+    if settings:
+        save(mode_file(), json.dumps(settings, indent=2).encode())
+    else:
+        mode_file().unlink(missing_ok=True)
+
+
+def desktop_session():
+    return (os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            and "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":"))
+
+
+def configured_shortcut():
+    saved = APP / "steam-shortcut.json"
+    try:
+        if saved.is_file():
+            value = json.loads(saved.read_text())["appid"]
+        else:
+            # Early manual installations used a numeric constant in profile.py.
+            # Inspect the declaration without executing the installed program.
+            declarations = ast.parse((APP / "profile.py").read_text()).body
+            value = next((n.value.value for n in declarations if isinstance(n, ast.Assign)
+                          and isinstance(n.value, ast.Constant) and any(isinstance(t, ast.Name)
+                          and t.id == "KEYBOARD" for t in n.targets)), None)
+        if type(value) is int and 0x80000000 <= value <= 0xffffffff:
+            return value
+    except (OSError, SyntaxError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def service_files_match():
+    """Recognize the shipped service and the earlier %h desktop installation."""
+    if any(not p.is_file() or p.is_symlink() for p in (ENTRY, UNIT, APP / "profile.py")):
+        return False
+    values = []
+    for path, section, keys in ((UNIT, "Service", ("ExecStart", "ExecStopPost")),
+                                (ENTRY, "Desktop Entry", ("Exec",))):
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            parser.read_string(path.read_text())
+            for key in keys:
+                command = parser.get(section, key).replace("%h/", str(Path.home()) + "/")
+                values.append(shlex.split(command))
+            if path == ENTRY and not parser.getboolean(section, "X-KDE-Wayland-VirtualKeyboard"):
+                return False
+        except (OSError, configparser.Error, ValueError):
+            return False
+    return values == [["/usr/bin/python3", str(APP / "bridge.py")],
+                      ["/usr/bin/python3", str(APP / "profile.py"), "leave"],
+                      [str(APP / "keyboard.py")]]
+
+
+def installation(state):
+    claimed = state.get("files", {})
+    core = ("bridge.py", "profile.py", "keyboard.py", "chord.py", "DeckSelector.qml")
+    prepared = (service_files_match() and os.access(APP / "keyboard.py", os.X_OK)
+                and all((APP / name).is_file() for name in core))
+    appid = configured_shortcut() if prepared else None
+    if MANIFEST.is_file():
+        # The manifest is written before each file. A partial prepare remains
+        # resumable, and an older installed release keeps its own runtime list.
+        owned = (state.get("format") == 1 and isinstance(claimed, dict)
+                 and all(isinstance(k, str) for k in claimed))
+        required = (ENTRY, UNIT, TEMPLATE, *(APP / name for name in core))
+        complete = (prepared and all(str(path) in claimed and path.is_file() for path in required)
+                    and all(Path(name).is_file() for name in claimed if Path(name).is_relative_to(APP)))
+        return ("managed", bool(complete), appid) if owned else ("unmanaged", False, None)
+    if prepared and appid is not None:
+        return "manual", True, appid
+    # Removal can legitimately leave empty directories or bytecode. Only
+    # paths that would collide with a new installation need manual attention.
+    reserved = (ENTRY, UNIT, HELPER, TEMPLATE, *(APP / name for name in RUNTIME_FILES))
+    if APP.is_symlink() or any(path.exists() or path.is_symlink() for path in reserved):
+        return "unmanaged", False, None
+    return "missing", False, None
+
+
+def unit_state():
+    result = cmd("systemctl", "--user", "show", UNIT_NAME, "--property=ActiveState,UnitFileState",
+                 capture_output=True, text=True)
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return values.get("ActiveState") == "active", values.get("UnitFileState") == "enabled"
+
+
+def panel_properties():
+    import dbus
+    bus = dbus.SessionBus()
+    return dbus.Interface(bus.get_object("org.kde.KWin", "/VirtualKeyboard", introspect=False),
+                          "org.freedesktop.DBus.Properties")
+
+
+def panel_state():
+    values = panel_properties().GetAll(VK, timeout=2)
+    return {"mode": int(values["mode"]), "visible": bool(values["visible"]),
+            "available": bool(values["available"])}
+
+
+def set_policy(policy):
+    import dbus
+    if panel_state()["mode"] != policy["mode"]:
+        panel_properties().Set(VK, "mode", dbus.Int32(policy["mode"], variant_level=1), timeout=2)
+    # KWin persists the D-Bus value. Put back the original representation,
+    # including an absent key for the implicit automatic visibility policy.
+    if kwin_setting(MODE_POLICY) != policy["raw"]:
+        set_kwin_setting(MODE_POLICY, policy["raw"])
+
+
+def policy_now():
+    return {"raw": kwin_setting(MODE_POLICY), "mode": panel_state()["mode"]}
+
+
+def unload_popup_guard():
+    import dbus
+    bus = dbus.SessionBus()
+    scripting = dbus.Interface(bus.get_object("org.kde.KWin", "/Scripting", introspect=False),
+                               "org.kde.kwin.Scripting")
+    if scripting.isScriptLoaded(POPUP_SCRIPT, timeout=2):
+        scripting.unloadScript(POPUP_SCRIPT, timeout=2)
+        if scripting.isScriptLoaded(POPUP_SCRIPT, timeout=2):
+            raise RuntimeError("KWin still has the Steam keyboard filter loaded")
+
+
+def snapshot():
+    active, enabled = unit_state()
+    return {"active": active, "enabled": enabled, "method": method(), "policy": policy_now()}
+
+
+def effective_mode(actual):
+    if actual["method"] == str(ENTRY) and actual["active"] and actual["enabled"] and actual["policy"]["mode"]:
+        return "plasma"
+    if not actual["active"] and not actual["enabled"] and not actual["policy"]["mode"]:
+        return "steam"
+    return "mixed"
+
+
+def status(state):
+    kind, prepared, appid = installation(state)
+    session = desktop_session()
+    mode = "steam" if kind == "missing" else "mixed"
+    recovery = "pending" in load_mode()
+    first_setup = kind == "managed" and not state.get("enabled", False)
+    if first_setup and not recovery:
+        mode = "steam"
+    elif prepared and session and not recovery:
+        mode = effective_mode(snapshot())
+    if kind == "managed" and prepared and appid is None:
+        try:
+            appid = lookup(ROOT, HELPER)
+        except (OSError, ValueError, RuntimeError):
+            pass
+    return {"installation": kind, "mode": mode, "prepared": prepared,
+            "setup_complete": kind == "manual" or (kind == "managed" and not first_setup),
+            "shortcut_appid": appid, "can_switch": prepared and session,
+            "supported_session": session, "recovery_pending": recovery}
+
+
+def restore_snapshot(previous):
+    # Always stop first if the previous session was inactive. ExecStopPost
+    # releases the temporary controller profile and the bridge's popup guard.
+    if not previous["active"]:
+        cmd("systemctl", "--user", "stop", UNIT_NAME)
+    cmd("systemctl", "--user", "enable" if previous["enabled"] else "disable", UNIT_NAME)
+    set_method(previous["method"])
+    set_policy(previous["policy"])
+    if previous["active"]:
+        cmd("systemctl", "--user", "start", UNIT_NAME)
+    else:
+        unload_popup_guard()
+    verify_settings(previous)
+
+
+def verify_settings(expected, available=False):
+    until = time.monotonic() + 3
+    while True:
+        actual = snapshot()
+        panel = panel_state()
+        if actual == expected and (not available or panel["available"]) and (actual["policy"]["mode"] or not panel["visible"]):
+            return
+        if time.monotonic() >= until:
+            raise RuntimeError("KWin or the user service did not apply the selected keyboard settings")
+        time.sleep(.08)
+
+
+def resume_interrupted(settings):
+    if "pending" in settings:
+        restore_snapshot(settings["pending"])
+        settings = {k: v for k, v in settings.items() if k != "pending"}
+        store_mode(settings)
+    return settings
+
+
+def switch_mode(state, choice):
+    if not desktop_session():
+        raise RuntimeError("Use the keyboard switcher in KDE Plasma Desktop Mode on Wayland")
+    kind, prepared, _ = installation(state)
+    if kind not in ("managed", "manual") or not prepared:
+        raise RuntimeError("The keyboard adapter is missing or its service belongs to another installation")
+    settings = resume_interrupted(load_mode())
+    first_setup = kind == "managed" and not state.get("enabled", False)
+    if choice == "steam" and first_setup:
+        # prepare only installed files. Keep the preexisting input method and
+        # visibility policy until the first explicitly requested activation.
+        return
+    before = snapshot()
+    if effective_mode(before) == choice and not first_setup:
+        if choice == "steam":
+            cmd("/usr/bin/python3", str(APP / "profile.py"), "leave")
+            unload_popup_guard()
+        elif not panel_state()["available"]:
+            raise RuntimeError("KWin has not loaded the Plasma keyboard input method")
+        return
+    store_mode({**settings, "pending": before})
+    original_policy = before["policy"]
+    try:
+        if choice == "steam":
+            # Stop the bridge before disabling its input method. An in-flight
+            # chord restores its temporary KWin policy as the service exits.
+            cmd("systemctl", "--user", "disable", "--now", UNIT_NAME)
+            cmd("/usr/bin/python3", str(APP / "profile.py"), "leave")
+            unload_popup_guard()
+            expected_policy = {"raw": "0", "mode": 0}
+            plasma_policy = settings.get("plasma_policy", before["policy"])
+            if effective_mode(before) == "plasma":
+                plasma_policy = policy_now()
+                original_policy = plasma_policy
+            if not plasma_policy["mode"]:
+                plasma_policy = {"raw": None, "mode": 1}
+            target_method = before["method"]
+            if target_method == str(ENTRY):
+                target_method = settings.get("steam_method", state.get("previous_method"))
+                if target_method == str(ENTRY):
+                    target_method = None
+            set_policy(expected_policy)
+            set_method(target_method)
+            expected = {"active": False, "enabled": False, "method": target_method, "policy": expected_policy}
+            verify_settings(expected)
+            settings["plasma_policy"] = plasma_policy
+            settings["steam_method"] = target_method
+        else:
+            if before["method"] != str(ENTRY):
+                settings["steam_method"] = before["method"]
+            if first_setup:
+                enable(state)
+            else:
+                cmd("systemctl", "--user", "enable", "--now", UNIT_NAME)
+                set_method(str(ENTRY))
+            restored = settings.get("plasma_policy", before["policy"])
+            if not restored["mode"]:
+                restored = {"raw": None, "mode": 1}
+            set_policy(restored)
+            expected = {"active": True, "enabled": True, "method": str(ENTRY), "policy": restored}
+            verify_settings(expected, available=True)
+        settings.setdefault("original_policy", original_policy)
+        settings["applied_policy"] = expected["policy"]
+        settings["mode"] = choice
+        store_mode(settings)
+    except Exception:
+        # Leave the on-disk snapshot in place until complete rollback. A later
+        # operation can recover after interruption of either half of a switch.
+        if snapshot() != before:
+            restore_snapshot(before)
+        store_mode({k: v for k, v in load_mode().items() if k != "pending"})
+        raise
+
+
 def remove(state):
     if not MANIFEST.exists():
         print("No managed installation.")
         return
-    if "previous_method" in state and method()==str(ENTRY):
-        set_method(state["previous_method"])
+    settings = resume_interrupted(load_mode())
     if str(UNIT) in state["files"] and UNIT.exists():
         cmd("systemctl","--user","disable","--now",UNIT_NAME)
+    if "original_policy" in settings and policy_now() == settings.get("applied_policy"):
+        set_policy(settings["original_policy"])
+    if "previous_method" in state and method()==str(ENTRY):
+        set_method(settings.get("steam_method", state["previous_method"]))
     remove_offline_binding(state)
     # The runtime regenerates this template when desktop bindings change.
     # Its most recent generated hash distinguishes that from a user's edit.
@@ -292,19 +589,31 @@ def remove(state):
     cmd("systemctl","--user","daemon-reload")
     digest_file.unlink(missing_ok=True)
     MANIFEST.unlink()
+    store_mode({})
     print("Removed the adapter. In Steam, remove the non-Steam shortcut ‘Deck Plasma Keyboard Controls’.")
     print("Use Manage → Remove non-Steam game. Your desktop controller layout was not edited.")
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action",choices=("prepare","bind","enable","remove"))
+    parser.add_argument("action", choices=("prepare", "bind", "enable", "remove", "status", "mode", "disable"))
+    parser.add_argument("selection", nargs="?", choices=("plasma", "steam"))
     args=parser.parse_args()
+    if (args.action == "mode") != bool(args.selection):
+        parser.error("mode requires plasma or steam; other commands take no selection")
+    if args.action == "status":
+        print(json.dumps(status(load_manifest()), ensure_ascii=False))
+        return
     STATE_DIR.mkdir(mode=0o700,parents=True,exist_ok=True)
     with (STATE_DIR/"setup.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state=load_manifest()
-        {"prepare":prepare,"bind":bind,"enable":enable,"remove":remove}[args.action](state)
+        if args.action in ("mode", "disable"):
+            switch_mode(state, args.selection or "steam")
+        elif args.action == "enable" and mode_file().exists():
+            switch_mode(state, "plasma")
+        else:
+            {"prepare":prepare,"bind":bind,"enable":enable,"remove":remove}[args.action](state)
 
 
 if __name__=="__main__":

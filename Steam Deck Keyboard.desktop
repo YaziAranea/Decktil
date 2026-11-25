@@ -1,0 +1,13 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=Steam Deck Keyboard
+Name[ru]=Клавиатура Steam Deck
+Comment=Choose between the Steam keyboard and the Plasma Keyboard adapter
+Comment[ru]=Выбор между клавиатурой Steam и адаптером Plasma Keyboard
+Exec=/usr/bin/python3 -c "import os,sys; from pathlib import Path; from urllib.parse import unquote,urlsplit; k=sys.argv[1]; p=Path(unquote(urlsplit(k).path) if k.startswith('file:') else k); os.execv(sys.executable,[sys.executable,str(p.with_name('start.py'))])" %k
+Icon=input-keyboard-virtual
+Categories=Settings;HardwareSettings;
+Terminal=false
+StartupNotify=true
+X-Deck-Plasma-Manager=true
