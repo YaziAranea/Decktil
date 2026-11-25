@@ -12,14 +12,31 @@ from unittest.mock import patch
 
 
 class PredictionCacheTests(unittest.TestCase):
+    def load_keyboard(self, directory):
+        source = Path(__file__).resolve().parents[1] / "src" / "keyboard.py"
+        spec = importlib.util.spec_from_file_location("decktil_layout", source)
+        keyboard = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, XDG_RUNTIME_DIR=directory):
+            spec.loader.exec_module(keyboard)
+        return keyboard
+
+    def test_replacing_dictionary_with_older_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keyboard = self.load_keyboard(directory)
+            source, index = root / "ru.txt.gz", root / "DeckWords.js"
+            for stamp, words in [(2_000_000_000, ["слово"]), (1_000_000_000, ["слово", "сленг"])]:
+                source.write_bytes(gzip.compress(("\n".join(words) + "\n").encode()))
+                os.utime(source, ns=(stamp, stamp))
+                keyboard.write_completions(index, source)
+                self.assertEqual(json.loads(index.read_text().split(" = ", 1)[1]), {"сл": words})
+            with patch.object(gzip, "open", side_effect=AssertionError("cache was not reused")):
+                keyboard.write_completions(index, source)
+
     def test_replacement_and_missing_model(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = Path(__file__).resolve().parents[1] / "src" / "keyboard.py"
-            spec = importlib.util.spec_from_file_location("decktil_layout", source)
-            keyboard = importlib.util.module_from_spec(spec)
-            with patch.dict(os.environ, XDG_RUNTIME_DIR=directory):
-                spec.loader.exec_module(keyboard)
+            keyboard = self.load_keyboard(directory)
             model, index = root / "ru-next.json.gz", root / "DeckNext.js"
 
             def generate(word, stamp):

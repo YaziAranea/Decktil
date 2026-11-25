@@ -25,7 +25,7 @@ WORD = {
 # Keep foreign tokens and punctuation visible so they interrupt the context.
 TOKENS = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)*|[^\s]", re.UNICODE)
 SEED_WEIGHT = 18
-CONTEXT_LIMIT = {1: 6500, 2: 10000}
+CONTEXT_LIMIT = {1: 8000, 2: 16500}
 CANDIDATES = 5
 
 

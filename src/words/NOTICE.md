@@ -2,7 +2,14 @@
 
 The English and Russian completion lists are adapted from Hermit Dave’s **FrequencyWords**, based on the 2018 OpenSubtitles corpus. The upstream lists and these adapted word lists are licensed under [Creative Commons Attribution–ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/).
 
-The included files retain frequency order, omit frequency counts and keep the first 30,000 distinct words made of 2–32 letters for each language. The local keyboard groups entries by their first two letters. [English source list](https://github.com/hermitdave/FrequencyWords/blob/525f9b560de45753a5ea01069454e72e9aa541c6/content/2018/en/en_50k.txt) · [Russian source list](https://github.com/hermitdave/FrequencyWords/blob/525f9b560de45753a5ea01069454e72e9aa541c6/content/2018/ru/ru_50k.txt) · [Upstream license information](https://github.com/hermitdave/FrequencyWords/tree/525f9b560de45753a5ea01069454e72e9aa541c6#license) · [OpenSubtitles corpus](https://opus.nlpl.eu/OpenSubtitles.php)
+Each dictionary starts with the first 100,000 distinct eligible entries in the full frequency list for its language. The generator keeps lowercase words between 2 and 32 characters, including internal hyphens and English apostrophes, normalizes curly apostrophes and removes frequency counts. It preserves the first 3,000 entries, then interleaves one curated chat or gaming term per eight corpus words. Duplicate entries retain their best position. The original Decktil slang selections in `training/en-slang.txt` and `training/ru-slang.txt` are available under the [project’s MIT license](../../LICENSE). The combined completion dictionaries are distributed under CC BY-SA 4.0. [Upstream license](https://github.com/hermitdave/FrequencyWords/blob/525f9b560de45753a5ea01069454e72e9aa541c6/README.md#license) · [OpenSubtitles corpus](https://opus.nlpl.eu/OpenSubtitles.php)
+
+To rebuild the completion dictionaries, run `python3 tools/build_completions.py` in the repository root. It downloads the pinned source revision and checks the SHA-256 digests below. If the source files are already on disk, pass `--source-dir /path/to/files` to rebuild offline. The installed keyboard reads the bundled dictionaries and needs no download.
+
+| FrequencyWords input | SHA-256 |
+| --- | --- |
+| [en_full.txt](https://raw.githubusercontent.com/hermitdave/FrequencyWords/525f9b560de45753a5ea01069454e72e9aa541c6/content/2018/en/en_full.txt) | `7fea67ab954e2c01df6c608c9826e594cf36f8823b3243554f88245fb75dc506` |
+| [ru_full.txt](https://raw.githubusercontent.com/hermitdave/FrequencyWords/525f9b560de45753a5ea01069454e72e9aa541c6/content/2018/ru/ru_full.txt) | `32dfd94138aea2667ec455dcc8512029e39bd4b8ea70b09410d569b69d511a30` |
 
 ## Next-word models
 

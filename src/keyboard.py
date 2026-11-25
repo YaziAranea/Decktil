@@ -62,6 +62,20 @@ def write_predictions(index, model):
     os.utime(index, ns=(stamp, stamp))
 
 
+def write_completions(index, dictionary):
+    stamp = dictionary.stat().st_mtime_ns
+    if index.is_file() and index.stat().st_mtime_ns == stamp:
+        return
+    buckets = {}
+    with gzip.open(dictionary, "rt", encoding="utf-8") as words:
+        for line in words:
+            word = line.strip()
+            buckets.setdefault(word[:2], []).append(word)
+    write_layout(index, ".pragma library\nvar words = " +
+                 json.dumps(buckets, ensure_ascii=False, separators=(",", ":")))
+    os.utime(index, ns=(stamp, stamp))
+
+
 def generate_layouts():
     layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     scale = trackpad_scale()
@@ -81,17 +95,7 @@ def generate_layouts():
         code = "ru" if language.name == "ru_RU" else "en"
         dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
         write_predictions(dest / "DeckNext.js", dictionary.parent / f"{code}-next.json.gz")
-        index = dest / "DeckWords.js"
-        if not index.exists() or index.stat().st_mtime_ns < dictionary.stat().st_mtime_ns:
-            buckets = {}
-            with gzip.open(dictionary, "rt", encoding="utf-8") as words:
-                for line in words:
-                    word = line.strip()
-                    buckets.setdefault(word[:2], []).append(word)
-            with tempfile.NamedTemporaryFile("w", dir=dest, delete=False) as file:
-                file.write(".pragma library\nvar words = ")
-                json.dump(buckets, file, ensure_ascii=False, separators=(",", ":"))
-            os.replace(file.name, index)
+        write_completions(dest / "DeckWords.js", dictionary)
         for source in language.iterdir():
             target = dest / source.name
             if source.suffix != ".qml":

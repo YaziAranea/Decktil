@@ -24,8 +24,10 @@ class PredictionDataTests(unittest.TestCase):
 
     def test_common_conversation_chains(self):
         examples = {
-            "en": {"hello": "how", "hello how": "are", "thank you": "for", "i don't": "know"},
-            "ru": {"привет": "как", "привет как": "дела", "спасибо за": "помощь", "я не": "могу"},
+            "en": {"hello": "how", "hello how": "are", "thank you": "for", "i don't": "know",
+                   "i think": "we", "skill": "issue", "grab some": "loot", "everyone typed": "gg"},
+            "ru": {"привет": "как", "привет как": "дела", "спасибо за": "помощь", "я не": "могу",
+                   "я могу": "помочь", "лови": "инвайт", "это полный": "кринж", "все написали": "гг"},
         }
         for lang, pairs in examples.items():
             with gzip.open(WORDS / f"{lang}-next.json.gz", "rt", encoding="utf-8") as stream:
