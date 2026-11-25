@@ -36,6 +36,7 @@ TEMPLATE = ROOT/"controller_base/templates/deck_plasma_keyboard.vdf"
 ABSENT = "__deck_plasma_unset__"
 RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py", "personal.py",
                  "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml",
+                 "appearance.py", "DeckAppearance.qml", "DeckPalette.qml", "DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml",
                  "DeckPrediction.js", "DeckGrammar.js", "DeckLearning.js", "DeckPersonal.qml",
                  "words/ru.txt.gz", "words/en.txt.gz", "words/ru-morph.json.gz",
                  "words/ru-next.json.gz", "words/en-next.json.gz", "words/NOTICE.md")

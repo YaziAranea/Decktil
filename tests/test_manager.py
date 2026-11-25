@@ -120,6 +120,34 @@ def private_session(root):
     finish()
     assert not window.state["personal_enabled"]
     click("back")
+    from appearance_page import AppearancePage, rgba
+    from src import appearance
+
+    def page():
+        return next(widget for widget in children(window) if isinstance(widget, AppearancePage))
+
+    click("appearance")
+    page().theme.set_active_id("lagoon")
+    assert appearance.load()["preset"] == "default"
+    page().apply.clicked()
+    assert appearance.load()["preset"] == "lagoon"
+    picker = page().pickers["keyStart"]
+    picker.set_rgba(rgba("#7D31B7"))
+    picker.emit("color-set")
+    page().direction.set_active_id("horizontal")
+    assert page().theme.get_active_id() == "custom"
+    window.language.set_active(0)
+    assert page().draft["keyStart"].lower() == "#7d31b7"
+    page().apply.clicked()
+    page().theme.set_active_id("default")
+    page().apply.clicked()
+    click("back")
+    click("appearance")
+    assert page().theme.get_active_id() == "default"
+    page().theme.set_active_id("custom")
+    assert page().draft["keyStart"].lower() == "#7d31b7" and page().draft["direction"] == "horizontal"
+    click("back")
+    assert appearance.load()["preset"] == "default"
     fixture = root / "state.json"
     state = json.loads(fixture.read_text())
     state["installation"] = "manual"

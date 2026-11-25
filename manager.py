@@ -91,6 +91,7 @@ COPY = {
     "back": ("Назад", "Back"),
     "refresh": ("Проверить снова", "Check again"),
     "personal": ("Личный словарь", "Personal dictionary"),
+    "appearance": ("Оформление", "Appearance"),
     "learn": ("Запоминать мои слова и выражения", "Learn my words and phrases"),
     "learn_details": ("Частые слова и сочетания из двух или трёх слов поднимаются в подсказках. Словарь хранится на этом устройстве.",
                       "Words and two- or three-word phrases you use often move up in suggestions. Your dictionary stays on this device."),
@@ -184,6 +185,8 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         self.lang = preferred_language()
         self.state = None
         self.page = "choose"
+        self.appearance_draft = {}
+        self.appearance_custom = {}
         self.error = None
         self.pending = None
         self.busy_text = ""
@@ -236,6 +239,10 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         return False
 
     def navigate(self, page):
+        if page == "appearance" and self.page != page:
+            from src import appearance
+            self.appearance_draft = appearance.load()
+            self.appearance_custom = appearance.load_custom() or {}
         self.page = page
         self.error = None
         self.render()
@@ -305,6 +312,23 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         self.language.get_accessible().set_name(self.t("language"))
         for child in self.body.get_children():
             child.destroy()
+        showing_setup = self.page != "choose"
+        if showing_setup != self.showing_setup and not self.is_maximized():
+            width, height = self.get_size()
+            if showing_setup and height < self.wizard_height:
+                self.height_before_setup = height
+                self.resize(width, self.wizard_height)
+            elif not showing_setup and self.height_before_setup is not None:
+                if abs(height - self.wizard_height) < 8:
+                    self.resize(width, self.height_before_setup)
+                self.height_before_setup = None
+        self.showing_setup = showing_setup
+        if self.page == "appearance":
+            from appearance_page import AppearancePage
+            self.body.add(AppearancePage(self.lang, self.appearance_draft, self.appearance_custom,
+                                         lambda: self.navigate("choose")))
+            self.body.show_all()
+            return
         self.body.pack_start(label(self.t("heading"), "deck-heading"), False, False, 0)
         current = self.state["mode"] if self.state else None
         supported = self.state is not None and self.state.get("supported_session", True)
@@ -342,17 +366,6 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             err.add(details)
             self.body.add(err)
 
-        showing_setup = self.page != "choose"
-        if showing_setup != self.showing_setup and not self.is_maximized():
-            width, height = self.get_size()
-            if showing_setup and height < self.wizard_height:
-                self.height_before_setup = height
-                self.resize(width, self.wizard_height)
-            elif not showing_setup and self.height_before_setup is not None:
-                if abs(height - self.wizard_height) < 8:
-                    self.resize(width, self.height_before_setup)
-                self.height_before_setup = None
-        self.showing_setup = showing_setup
         if self.page in ("personal", "clear_personal"):
             self.personal_page()
         elif showing_setup:
@@ -364,6 +377,7 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         if not self.pending and (not self.state or self.page == "choose"):
             row = Gtk.Box()
             if self.state:
+                row.pack_start(self.button("appearance", lambda: self.navigate("appearance"), flat=True), False, False, 0)
                 row.pack_start(self.button("personal", lambda: self.navigate("personal"), flat=True), False, False, 0)
             row.pack_end(self.button("refresh", self.refresh, flat=True), False, False, 0)
             self.body.pack_end(row, False, False, 0)

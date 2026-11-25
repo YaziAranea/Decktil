@@ -118,8 +118,37 @@ def write_morphology(index, dictionary):
     os.utime(index, ns=(stamp, stamp))
 
 
+def add_alternate_keys(layout):
+    """Extend plain letter and period keys in the local copy of a Plasma layout."""
+    def extend(match):
+        block = match[0]
+        if not re.search(r'''(?m)^\s*text:\s*["'][a-zа-яё.]["']\s*$''', block, re.IGNORECASE):
+            return block
+        indent = match["indent"] + "    "
+        inherited = re.search(r"(?m)^[ \t]*alternativeKeys:[ \t]*(.+)$", block)
+        value = inherited[1] if inherited else "[]"
+        block = re.sub(r"(?m)^[ \t]*(?:alternativeKeys|smallText|smallTextVisible):[^\n]*\n", "", block)
+        additions = (
+            "readonly property bool deckHasAlternates: true",
+            f"alternativeKeys: Alternates.keys(text, {value})",
+            "smallText: Alternates.hint(text, alternativeKeys, uppercased)",
+            "smallTextVisible: false",
+            "DeckKeyHint { hintColor: deckLayout.deckAppearance.textColor }",
+        )
+        start, rest = block.split("\n", 1)
+        return start + "\n" + "".join(indent + line + "\n" for line in additions) + rest
+
+    layout = re.sub(r"(?ms)^(?P<indent>[ \t]*)Key[ \t]*\{.*?^(?P=indent)\}", extend, layout)
+    return layout.replace("import QtQuick\n", 'import QtQuick\nimport "DeckAlternates.js" as Alternates\n', 1)
+
+
 def generate_layouts():
     layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # All layout pages share one QML singleton, including when changing languages.
+    style = layout_root / "DecktilStyle"
+    style.mkdir(exist_ok=True)
+    write_layout(style / "DeckPalette.qml", DELEGATE.with_name("DeckPalette.qml").read_text())
+    write_layout(style / "qmldir", "singleton Palette 1.0 DeckPalette.qml\n")
     scale = trackpad_scale()
     for language in SYSTEM.iterdir():
         dest = layout_root / language.name
@@ -132,7 +161,8 @@ def generate_layouts():
         if not local_delegate.exists():
             local_delegate.symlink_to(DELEGATE)
         # QML resolves relative JS imports against the component's real path.
-        for component in ("DeckWordRow.qml", "DeckPrediction.js", "DeckGrammar.js", "DeckPersonal.qml", "DeckLearning.js"):
+        for component in ("DeckWordRow.qml", "DeckPrediction.js", "DeckGrammar.js", "DeckPersonal.qml", "DeckLearning.js",
+                          "DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml", "DeckAppearance.qml"):
             write_layout(dest / component, DELEGATE.with_name(component).read_text())
         code = "ru" if language.name == "ru_RU" else "en"
         dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
@@ -149,8 +179,10 @@ def generate_layouts():
             # Each page gets its own delegate so symbol and locale changes drop old keys.
             body = re.sub(r"(?m)^([ \t]*)KeyboardLayout \{", lambda m:
                 m[0] + "\n" + m[1] + "    id: deckLayout\n" + m[1] +
+                "    property QtObject deckAppearance: DeckAppearance { layout: deckLayout }\n" + m[1] +
                 f"    property QtObject deckSelector: DeckSelector {{ layout: deckLayout; typingScale: {scale} }}", body)
             if source.name == "main.qml":
+                body = add_alternate_keys(body)
                 body = re.sub(r"(?m)^(\s*)KeyboardRow \{", r"\1DeckWordRow {}\n\1KeyboardRow {", body, count=1)
             write_layout(target, body)
 

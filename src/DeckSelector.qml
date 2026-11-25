@@ -88,6 +88,35 @@ QtObject {
         key.clicked()
     }
 
+    function chooseAlternate(key, symbol) {
+        if (key && key.enabled && key.visible && layout.visible)
+            InputContext.inputEngine.virtualKeyClick(key.key, symbol,
+                key.uppercased ? Qt.ShiftModifier : Qt.NoModifier)
+    }
+
+    function cancelHolds() {
+        leftHold.cancel()
+        rightHold.cancel()
+    }
+
+    function pressKey(key, bit, menu, position) {
+        if (isBackspace(key))
+            startErase(bit, 0)
+        else if (key && key.deckHasAlternates && key.effectiveAlternativeKeys.length && (held & bit))
+            menu.begin(key, position)
+        else
+            activate(key)
+    }
+
+    function trackHold(menu, bit, position) {
+        if (!menu.tracking)
+            return
+        if (contacts & bit)
+            menu.update(position)
+        if (!(held & bit))
+            menu.release()
+    }
+
     function stopErase() {
         eraseTimer.stop()
         eraseOwner = 0
@@ -219,7 +248,8 @@ QtObject {
     }
     property Connections editorFocus: Connections {
         target: InputContext
-        function onInputItemChanged() { selector.stopErase(); selector.cancelPlaceholder() }
+        function onInputItemChanged() { selector.stopErase(); selector.cancelPlaceholder(); selector.cancelHolds() }
+        function onLocaleChanged() { selector.cancelHolds() }
     }
     property Connections layoutVisibility: Connections {
         target: selector.layout
@@ -227,6 +257,7 @@ QtObject {
             if (!selector.layout.visible) {
                 selector.stopErase()
                 selector.cancelPlaceholder()
+                selector.cancelHolds()
             }
         }
     }
@@ -235,6 +266,7 @@ QtObject {
         if (serial === 0) {
             stopErase()
             cancelPlaceholder()
+            cancelHolds()
         }
         if (!layout.visible || layout.width <= 0 || layout.height <= 0)
             return
@@ -247,6 +279,11 @@ QtObject {
             leftPosition = padPosition(0, lx, ly)
         if (contacts & 2)
             rightPosition = padPosition(1, rx, ry)
+        const cancelMenu = (Number(pressed) & eraseButton) && (leftHold.opened || rightHold.opened)
+        if (cancelMenu)
+            cancelHolds()
+        trackHold(leftHold, 1, leftPosition)
+        trackHold(rightHold, 2, rightPosition)
         const nextLeft = (contacts & 1) ? keyAt(layout, leftPosition.x, leftPosition.y) : null
         const nextRight = (contacts & 2) ? keyAt(layout, rightPosition.x, rightPosition.y) : null
         const moved = ((nextLeft && nextLeft !== leftKey) ? 1 : 0)
@@ -272,19 +309,13 @@ QtObject {
             })
         if (clicked & 1) {
             leftFeedback.pulse()
-            if (isBackspace(leftKey))
-                startErase(1, 0)
-            else
-                activate(leftKey)
+            pressKey(leftKey, 1, leftHold, leftPosition)
         }
         if (clicked & 2) {
             rightFeedback.pulse()
-            if (isBackspace(rightKey))
-                startErase(2, 0)
-            else
-                activate(rightKey)
+            pressKey(rightKey, 2, rightHold, rightPosition)
         }
-        if (Number(pressed) & eraseButton)
+        if ((Number(pressed) & eraseButton) && !cancelMenu)
             startErase(eraseButton, Number(serial))
     }
 
@@ -293,7 +324,7 @@ QtObject {
         service: "local.deck.PlasmaKeyboard"
         path: "/Pads"
         iface: "local.deck.PlasmaKeyboard"
-        function dbusCancelRepeat() { selector.stopErase(); selector.cancelPlaceholder() }
+        function dbusCancelRepeat() { selector.stopErase(); selector.cancelPlaceholder(); selector.cancelHolds() }
         function dbusFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial) {
             selector.updateFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial)
         }
@@ -332,7 +363,7 @@ QtObject {
             pressure: selector.leftPressure
             selectedKey: selector.leftKey
             position: selector.leftPosition
-            label: selector.keyLabel(selector.leftKey)
+            label: leftHold.opened ? "" : selector.keyLabel(selector.leftKey)
             accent: "#52c9ff"
             splitLabels: feedbackSurface.splitLabels
             midpoint: feedbackSurface.midpoint
@@ -345,10 +376,32 @@ QtObject {
             pressure: selector.rightPressure
             selectedKey: selector.rightKey
             position: selector.rightPosition
-            label: selector.keyLabel(selector.rightKey)
+            label: rightHold.opened ? "" : selector.keyLabel(selector.rightKey)
             accent: "#ffbb59"
             splitLabels: feedbackSurface.splitLabels
             midpoint: feedbackSurface.midpoint
+        }
+        DeckHold {
+            id: leftHold
+            objectName: "deckLeftAlternates"
+            layout: selector.layout
+            leftHand: true
+            accent: selector.layout.deckAppearance ? selector.layout.deckAppearance.accentColor : "#52c9ff"
+            panelColor: selector.layout.deckAppearance ? selector.layout.deckAppearance.popupColor : "#dc212837"
+            textColor: selector.layout.deckAppearance ? selector.layout.deckAppearance.textColor : "white"
+            onTapped: key => selector.activate(key)
+            onChosen: (key, symbol) => selector.chooseAlternate(key, symbol)
+        }
+        DeckHold {
+            id: rightHold
+            objectName: "deckRightAlternates"
+            layout: selector.layout
+            leftHand: false
+            accent: selector.layout.deckAppearance ? selector.layout.deckAppearance.accentColor : "#ffbb59"
+            panelColor: selector.layout.deckAppearance ? selector.layout.deckAppearance.popupColor : "#dc212837"
+            textColor: selector.layout.deckAppearance ? selector.layout.deckAppearance.textColor : "white"
+            onTapped: key => selector.activate(key)
+            onChosen: (key, symbol) => selector.chooseAlternate(key, symbol)
         }
     }
 

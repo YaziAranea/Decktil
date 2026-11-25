@@ -20,6 +20,40 @@ class PredictionCacheTests(unittest.TestCase):
             spec.loader.exec_module(keyboard)
         return keyboard
 
+    def test_only_alphabet_and_period_keys_gain_the_alternates_menu(self):
+        with tempfile.TemporaryDirectory() as directory:
+            keyboard = self.load_keyboard(directory)
+            layout = '''import QtQuick
+KeyboardLayout {
+    KeyboardRow {
+        Key {
+            id: referenceKey
+            text: "е"
+            alternativeKeys: "её"
+        }
+        Key {
+            text: "."
+            alternativeKeys: "!.?"
+            smallText: "!?"
+            smallTextVisible: true
+        }
+        Key {
+            text: ","
+            smallText: "⚙"
+            smallTextVisible: keyboard.isFunctionPopupListAvailable()
+        }
+        BackspaceKey {
+        }
+    }
+}'''
+            result = keyboard.add_alternate_keys(layout)
+            self.assertEqual(result.count("DeckKeyHint {"), 2)
+            self.assertEqual(result.count("smallTextVisible: false"), 2)
+            self.assertIn('Alternates.keys(text, "её")', result)
+            self.assertIn('Alternates.keys(text, "!.?")', result)
+            self.assertIn("id: referenceKey", result)
+            self.assertIn("smallTextVisible: keyboard.isFunctionPopupListAvailable()", result)
+
     def test_morphology_cache_and_language_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -26,7 +26,7 @@ def install_manager(source, data_dir):
         if menu.is_symlink() or (menu.exists() and
                 "X-Deck-Plasma-Manager=true" not in menu.read_text().splitlines()):
             raise RuntimeError(f"An existing menu entry belongs to another application: {menu}")
-        files = ["manager.py", "setup.py", "steam_shortcuts.py", "LICENSE", "INSTALL.md",
+        files = ["manager.py", "appearance_page.py", "setup.py", "steam_shortcuts.py", "LICENSE", "INSTALL.md",
                  *("src/" + name for name in setup.RUNTIME_FILES)]
         payload = {name: (source / name).read_bytes() for name in files}
         fingerprint = hashlib.sha256()
