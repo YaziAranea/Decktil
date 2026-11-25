@@ -45,7 +45,7 @@ def save_language(code):
 
 
 COPY = {
-    "title": ("Клавиатура Steam Deck", "Steam Deck Keyboard"),
+    "title": ("Decktil", "Decktil"),
     "language": ("Язык интерфейса", "Interface language"),
     "heading": ("Экранная клавиатура", "On-screen keyboard"),
     "checking": ("Проверяем, какая клавиатура включена…", "Checking the active keyboard…"),

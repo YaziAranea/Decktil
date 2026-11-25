@@ -34,7 +34,8 @@ TEMPLATE = ROOT/"controller_base/templates/deck_plasma_keyboard.vdf"
 ABSENT = "__deck_plasma_unset__"
 RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py",
                  "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml",
-                 "words/ru.txt.gz", "words/en.txt.gz", "words/NOTICE.md")
+                 "DeckPrediction.js", "words/ru.txt.gz", "words/en.txt.gz",
+                 "words/ru-next.json.gz", "words/en-next.json.gz", "words/NOTICE.md")
 
 
 def cmd(*args, **kwargs):
@@ -149,8 +150,8 @@ def prepare(state):
     managed_file(state,HELPER,helper,0o755)
     desktop=f"""[Desktop Entry]
 Type=Application
-Name=Plasma Keyboard (Steam Deck)
-Name[ru]=Клавиатура Plasma (Steam Deck)
+Name=Decktil (Plasma Keyboard)
+Name[ru]=Decktil (Клавиатура Plasma)
 Exec={quoted(APP/'keyboard.py')}
 X-KDE-Wayland-VirtualKeyboard=true
 Icon=input-keyboard-virtual

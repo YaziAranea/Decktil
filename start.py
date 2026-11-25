@@ -13,7 +13,7 @@ import tempfile
 import setup
 
 SOURCE = Path(__file__).resolve().parent
-LAUNCHER = "Steam Deck Keyboard.desktop"
+LAUNCHER = "Decktil.desktop"
 MENU_ID = "io.github.YaziAranea.SteamDeckPlasmaKeyboard.desktop"
 
 
@@ -65,7 +65,7 @@ def main():
         message = str(error)
         print(message, file=sys.stderr)
         if not args.install_only and shutil.which("kdialog"):
-            subprocess.run(["kdialog", "--title", "Steam Deck Keyboard", "--error", message])
+            subprocess.run(["kdialog", "--title", "Decktil", "--error", message])
         return 1
     return 0
 

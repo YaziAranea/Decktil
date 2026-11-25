@@ -38,6 +38,30 @@ def write_layout(path, body):
     os.replace(file.name, path)
 
 
+def write_predictions(index, model):
+    # An exact timestamp match also detects replacement by an older model.
+    try:
+        stamp = model.stat().st_mtime_ns
+        if index.is_file() and index.stat().st_mtime_ns == stamp:
+            return
+        with gzip.open(model, "rt", encoding="utf-8") as stream:
+            data = json.load(stream)
+        if not isinstance(data, dict) or data.get("format") != 1:
+            raise ValueError("unsupported prediction model")
+        source = [".pragma library"]
+        for key in ("bigram", "trigram"):
+            if not isinstance(data.get(key), dict):
+                raise ValueError(f"missing {key} predictions")
+            source.append("var " + key + " = " + json.dumps(data[key], ensure_ascii=False, separators=(",", ":")))
+    except (OSError, EOFError, ValueError) as error:
+        # The keyboard and its ordinary prefix completions remain usable.
+        print(f"Next-word suggestions unavailable for {model.name}: {error}", file=sys.stderr)
+        write_layout(index, ".pragma library\nvar bigram = {}\nvar trigram = {}\n")
+        return
+    write_layout(index, "\n".join(source) + "\n")
+    os.utime(index, ns=(stamp, stamp))
+
+
 def generate_layouts():
     layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     scale = trackpad_scale()
@@ -51,11 +75,12 @@ def generate_layouts():
         local_delegate = dest / "DeckSelector.qml"
         if not local_delegate.exists():
             local_delegate.symlink_to(DELEGATE)
-        row = dest / "DeckWordRow.qml"
         # QML resolves relative JS imports against the component's real path.
-        write_layout(row, DELEGATE.with_name(row.name).read_text())
+        for component in ("DeckWordRow.qml", "DeckPrediction.js"):
+            write_layout(dest / component, DELEGATE.with_name(component).read_text())
         code = "ru" if language.name == "ru_RU" else "en"
         dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
+        write_predictions(dest / "DeckNext.js", dictionary.parent / f"{code}-next.json.gz")
         index = dest / "DeckWords.js"
         if not index.exists() or index.stat().st_mtime_ns < dictionary.stat().st_mtime_ns:
             buckets = {}
@@ -83,11 +108,12 @@ def generate_layouts():
             write_layout(target, body)
 
 
-try:
-    generate_layouts()
-except OSError as error:
-    print(f"Controller layouts unavailable: {error}", file=sys.stderr)
-else:
-    os.environ["PLASMA_KEYBOARD_USE_QT_LAYOUTS"] = "1"
-    os.environ["QT_VIRTUALKEYBOARD_LAYOUT_PATH"] = str(layout_root)
-os.execv(KEYBOARD, [KEYBOARD])
+if __name__ == "__main__":
+    try:
+        generate_layouts()
+    except OSError as error:
+        print(f"Controller layouts unavailable: {error}", file=sys.stderr)
+    else:
+        os.environ["PLASMA_KEYBOARD_USE_QT_LAYOUTS"] = "1"
+        os.environ["QT_VIRTUALKEYBOARD_LAYOUT_PATH"] = str(layout_root)
+    os.execv(KEYBOARD, [KEYBOARD])
