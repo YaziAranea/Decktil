@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import tempfile
 import time
 
 from steam_shortcuts import helper_records, lookup
+from src import personal
 
 PACKAGE = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home()/".local/share")
@@ -32,9 +34,9 @@ UNIT = CONFIG/"systemd/user"/UNIT_NAME
 ROOT = Path.home()/".steam/steam"
 TEMPLATE = ROOT/"controller_base/templates/deck_plasma_keyboard.vdf"
 ABSENT = "__deck_plasma_unset__"
-RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py",
+RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py", "personal.py",
                  "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml",
-                 "DeckPrediction.js", "words/ru.txt.gz", "words/en.txt.gz",
+                 "DeckPrediction.js", "DeckLearning.js", "DeckPersonal.qml", "words/ru.txt.gz", "words/en.txt.gz",
                  "words/ru-next.json.gz", "words/en-next.json.gz", "words/NOTICE.md")
 
 
@@ -450,7 +452,26 @@ def status(state):
     return {"installation": kind, "mode": mode, "prepared": prepared,
             "setup_complete": kind == "manual" or (kind == "managed" and not first_setup),
             "shortcut_appid": appid, "can_switch": prepared and session,
-            "supported_session": session, "recovery_pending": recovery}
+            "supported_session": session, "recovery_pending": recovery,
+            "personal_enabled": personal.enabled()}
+
+
+def configure_personal(selection):
+    if selection == "clear":
+        personal.clear()
+    else:
+        personal.set_enabled(selection == "on")
+    # A running keyboard drops in-flight suggestions. A stopped one reads the
+    # preference on its next launch, including when the user is in Steam mode.
+    if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        import dbus
+        try:
+            bus = dbus.SessionBus()
+            name = "local.deck.PlasmaKeyboard"
+            bus.call_blocking(bus.get_name_owner(name), "/Pads", name,
+                              "PersonalSettingsChanged", "", (), timeout=1)
+        except dbus.DBusException:
+            pass
 
 
 def restore_snapshot(previous):
@@ -597,11 +618,18 @@ def remove(state):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "bind", "enable", "remove", "status", "mode", "disable"))
-    parser.add_argument("selection", nargs="?", choices=("plasma", "steam"))
+    parser.add_argument("action", choices=("prepare", "bind", "enable", "remove", "status", "mode", "disable", "personal"))
+    parser.add_argument("selection", nargs="?")
     args=parser.parse_args()
-    if (args.action == "mode") != bool(args.selection):
-        parser.error("mode requires plasma or steam; other commands take no selection")
+    choices = {"mode": ("plasma", "steam"), "personal": ("on", "off", "clear")}
+    if args.action in choices:
+        if args.selection not in choices[args.action]:
+            parser.error(f"{args.action} requires one of {', '.join(choices[args.action])}")
+    elif args.selection is not None:
+        parser.error(f"{args.action} takes no selection")
+    if args.action == "personal":
+        configure_personal(args.selection)
+        return
     if args.action == "status":
         print(json.dumps(status(load_manifest()), ensure_ascii=False))
         return
@@ -620,5 +648,5 @@ def main():
 if __name__=="__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as err:
+    except (OSError, ValueError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError) as err:
         sys.exit(str(err))

@@ -90,6 +90,16 @@ COPY = {
     "shortcut_help": ("Ярлыка нет в библиотеке", "The shortcut is missing"),
     "back": ("Назад", "Back"),
     "refresh": ("Проверить снова", "Check again"),
+    "personal": ("Личный словарь", "Personal dictionary"),
+    "learn": ("Запоминать мои слова и выражения", "Learn my words and phrases"),
+    "learn_details": ("Частые слова и сочетания из двух или трёх слов поднимаются в подсказках. Словарь хранится на этом устройстве.",
+                      "Words and two- or three-word phrases you use often move up in suggestions. Your dictionary stays on this device."),
+    "personal_saving": ("Сохраняем настройки словаря…", "Saving dictionary settings…"),
+    "clear_personal": ("Очистить личный словарь", "Clear personal dictionary"),
+    "confirm_clear": ("Удалить все выученные слова и сочетания на обоих языках? Восстановить их после очистки нельзя.",
+                      "Delete all learned words and phrases in both languages? This cannot be undone."),
+    "cancel": ("Отмена", "Cancel"),
+    "clear": ("Очистить", "Clear"),
     "switch_plasma": ("Включаем клавиатуру Plasma…", "Enabling Plasma Keyboard…"),
     "switch_steam": ("Возвращаем клавиатуру Steam…", "Restoring Steam Keyboard…"),
     "ready_plasma": ("Откройте поле ввода в приложении Wayland и нажмите Steam + X. Ведите пальцами по трекпадам и выбирайте буквы кликами или триггерами.",
@@ -343,7 +353,9 @@ class KeyboardWindow(Gtk.ApplicationWindow):
                     self.resize(width, self.height_before_setup)
                 self.height_before_setup = None
         self.showing_setup = showing_setup
-        if showing_setup:
+        if self.page in ("personal", "clear_personal"):
+            self.personal_page()
+        elif showing_setup:
             self.setup_page()
         elif self.state and self.state["installation"] == "unmanaged":
             self.body.add(label(self.t("unmanaged")))
@@ -351,9 +363,28 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             self.body.add(label(self.t("ready_" + current), "deck-caption"))
         if not self.pending and (not self.state or self.page == "choose"):
             row = Gtk.Box()
+            if self.state:
+                row.pack_start(self.button("personal", lambda: self.navigate("personal"), flat=True), False, False, 0)
             row.pack_end(self.button("refresh", self.refresh, flat=True), False, False, 0)
             self.body.pack_end(row, False, False, 0)
         self.body.show_all()
+
+    def personal_page(self):
+        box = self.card("personal")
+        box.set_sensitive(self.pending is None and self.state is not None)
+        if self.page == "clear_personal":
+            box.add(label(self.t("confirm_clear")))
+            self.actions(box, self.button("cancel", lambda: self.navigate("personal")),
+                         self.button("clear", lambda: self.perform(["personal", "clear"], "personal_saving", "personal")))
+            return
+        learn = Gtk.CheckButton.new_with_label(self.t("learn"))
+        learn.set_active(bool(self.state and self.state.get("personal_enabled")))
+        learn.connect("toggled", lambda button: self.perform(
+            ["personal", "on" if button.get_active() else "off"], "personal_saving", "personal"))
+        box.add(learn)
+        box.add(label(self.t("learn_details"), "deck-caption"))
+        self.actions(box, self.button("back", lambda: self.navigate("choose")),
+                     self.button("clear_personal", lambda: self.navigate("clear_personal"), flat=True))
 
     def setup_page(self):
         title = {"prepare": "setup_title", "template": "template_title",

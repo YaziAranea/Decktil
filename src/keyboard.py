@@ -90,7 +90,7 @@ def generate_layouts():
         if not local_delegate.exists():
             local_delegate.symlink_to(DELEGATE)
         # QML resolves relative JS imports against the component's real path.
-        for component in ("DeckWordRow.qml", "DeckPrediction.js"):
+        for component in ("DeckWordRow.qml", "DeckPrediction.js", "DeckPersonal.qml", "DeckLearning.js"):
             write_layout(dest / component, DELEGATE.with_name(component).read_text())
         code = "ru" if language.name == "ru_RU" else "en"
         dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"

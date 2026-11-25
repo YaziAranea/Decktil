@@ -86,14 +86,14 @@ function lookup(table, key) {
     return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : []
 }
 
-function suggestions(ctx, words, bigram, trigram) {
+function suggestions(ctx, words, bigram, trigram, personal) {
     if (!ctx)
         return []
     const result = []
     const seen = []
     const prefix = canonical(ctx.prefix)
     const last = ctx.previous.length - 1
-    const groups = []
+    const groups = personal && personal.length ? [personal] : []
     if (last === 1)
         groups.push(lookup(trigram, ctx.previous.join(" ")))
     if (last >= 0)

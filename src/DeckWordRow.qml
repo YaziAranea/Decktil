@@ -21,7 +21,14 @@ KeyboardRow {
     readonly property var wordContext: blocked ? null : Prediction.context(
         InputContext.surroundingText, InputContext.cursorPosition, InputContext.locale)
     readonly property var candidates: Prediction.suggestions(
-        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram)
+        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram, personal.words)
+
+    property DeckPersonal personalization: DeckPersonal {
+        id: personal
+        active: row.visible
+        blocked: row.blocked
+        context: row.wordContext
+    }
 
     function choose(candidate) {
         if (blocked || settle.running || !candidate || candidates.indexOf(candidate) < 0)
@@ -32,6 +39,7 @@ KeyboardRow {
         if (insert) {
             // Prevent a second tap on the old list before the native editor acknowledges the edit.
             settle.restart()
+            personal.key(insert, candidate, false)
             InputContext.commit(insert)
         }
     }

@@ -26,6 +26,11 @@ elif args == ['bind']:
         sys.exit('Choose Steam > Exit and allow Steam to finish before offline binding')
 elif len(args) == 2 and args[0] == 'mode':
     state.update(mode=args[1], setup_complete=True)
+elif len(args) == 2 and args[0] == 'personal':
+    if args[1] == 'clear':
+        state['cleared'] = True
+    else:
+        state['personal_enabled'] = args[1] == 'on'
 else:
     sys.exit('Unexpected command')
 state_file.write_text(json.dumps(state))
@@ -100,6 +105,21 @@ def private_session(root):
     finish()
     assert window.state["mode"] == "plasma"
     assert manager.preferred_language() == 1
+    click("personal")
+    click("learn")
+    finish()
+    assert window.page == "personal" and window.state["personal_enabled"]
+    click("clear_personal")
+    click("cancel")
+    assert not window.state.get("cleared")
+    click("clear_personal")
+    click("clear")
+    finish()
+    assert window.state["cleared"] and window.state["personal_enabled"]
+    click("learn")
+    finish()
+    assert not window.state["personal_enabled"]
+    click("back")
     fixture = root / "state.json"
     state = json.loads(fixture.read_text())
     state["installation"] = "manual"

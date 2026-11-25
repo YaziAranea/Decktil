@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from gi.repository import GLib, GLibUnix
 from chord import SteamChord
 from haptics import TrackpadFeedback
 from popup import SteamPopupGuard
+import personal
 import profile as mapping
 
 INTERFACE = "local.deck.PlasmaKeyboard"
@@ -136,6 +138,35 @@ class Bridge(dbus.service.Object):
     def CancelRepeat(self):
         """Cancel an active erase gesture on Wayland editor deactivation."""
 
+    @dbus.service.signal(INTERFACE, signature="")
+    def PersonalChanged(self):
+        """Invalidate personal suggestions and outstanding learning events."""
+
+    @dbus.service.method(INTERFACE, in_signature="", out_signature="")
+    def PersonalSettingsChanged(self):
+        self.PersonalChanged()
+
+    @dbus.service.method(INTERFACE, in_signature="", out_signature="s")
+    def PersonalSession(self):
+        return "" if self.locked or self.in_game else personal.session()
+
+    @dbus.service.method(INTERFACE, in_signature="sssss", out_signature="")
+    def LearnWord(self, generation, locale, prev2, prev1, word):
+        if self.visible and not self.locked and not self.in_game:
+            try:
+                personal.learn(generation, locale, prev2, prev1, word)
+            except (OSError, sqlite3.Error):
+                pass  # Typing continues with the built-in dictionary on storage errors.
+
+    @dbus.service.method(INTERFACE, in_signature="ssss", out_signature="as")
+    def PersonalSuggestions(self, locale, prev2, prev1, prefix):
+        if self.visible and not self.locked and not self.in_game:
+            try:
+                return personal.suggestions(locale, prev2, prev1, prefix)
+            except (OSError, sqlite3.Error):
+                pass
+        return []
+
     @dbus.service.method(INTERFACE, in_signature="i", out_signature="")
     def CloseOnEmpty(self, serial):
         # The layout sees the editor's surrounding/selected/preedit text. The
@@ -207,6 +238,7 @@ class Bridge(dbus.service.Object):
 
     def editor_changed(self):
         if self.visible and not self.recovery_editor():
+            self.PersonalChanged()
             self.cancel_erase()
             if not self.ready and self.verified_pin:
                 self.stop_input()
@@ -316,6 +348,7 @@ class Bridge(dbus.service.Object):
     def lock_changed(self, locked):
         self.panel_epoch += 1
         self.locked = bool(locked)
+        self.PersonalChanged()
         if self.locked:
             self.popup_guard.set_enabled(False)
         self.chord.reset()
@@ -331,6 +364,7 @@ class Bridge(dbus.service.Object):
             self.visible = False
         if self.visible != was_visible:
             self.panel_epoch += 1
+            self.PersonalChanged()
         self.popup_guard.set_enabled(bool(self.chord.enabled and self.fd is not None
                                          and not self.locked and not self.in_game
                                          and state.get("available") and state.get("mode")))
@@ -448,6 +482,8 @@ class Bridge(dbus.service.Object):
             self.in_game = bool(pid) and mapping.running_game()
         except OSError:
             self.in_game = True
+        if self.in_game != was_in_game:
+            self.PersonalChanged()
         if self.in_game and not was_in_game:
             self.chord.reset()
         if self.fd is not None and (pid != self.steam_pid or self.locked):

@@ -1,5 +1,6 @@
 import QtQml
 import "../src/DeckPrediction.js" as Prediction
+import "../src/DeckLearning.js" as Learning
 
 QtObject {
     function same(actual, expected, description) {
@@ -32,7 +33,40 @@ QtObject {
             const inserted = Prediction.insertion(ctx, word, Prediction.canAppendSpace(text, pos))
             return text.slice(0, pos) + inserted + "|" + text.slice(pos)
         }
+        function train(seed, events, locale) {
+            let text = seed
+            const state = Learning.start(text, text.length)
+            for (const edit of events) {
+                const erase = edit === "<"
+                const inserted = Array.isArray(edit) ? edit[0] : (erase ? "" : edit)
+                Learning.queue(state, inserted, Array.isArray(edit) ? edit[1] : "", erase)
+                text = erase ? text.slice(0, -1) : text + inserted
+            }
+            return Learning.confirm(state, text, text.length, locale || "en_US")
+        }
         try {
+            same(train("pasted word", [" "]), [], "a separator never learns clipboard or existing text")
+            same(train("pre", Array.from("fix ")), [], "ignore partial words started outside Decktil")
+            same(train("", Array.from("visit.tld someone@example.org ")), [], "exclude URLs and addresses")
+            same(train("", Array.from("nice loott< ")), [
+                {word: "nice", previous: []}, {word: "loot", previous: ["nice"]}
+            ], "coalesced native events, backspace correction and phrase")
+            same(train("", ["м", "о", ["гу ", "могу"], "я", " "], "ru_RU"), [
+                {word: "могу", previous: []}, {word: "я", previous: ["могу"]}
+            ], "explicit completion learned once with automatic separator")
+            same(train("", Array.from("go now. yes ")), [
+                {word: "go", previous: []}, {word: "now", previous: ["go"]},
+                {word: "yes", previous: []}
+            ], "sentence ending resets expression context")
+            const mismatch = Learning.start("", 0)
+            Learning.queue(mismatch, "x", "", false)
+            same(Learning.confirm(mismatch, "y", 1, "en_US"), null, "editor rejected key")
+            same(Learning.confirm(mismatch, "x", 1, "en_US"), [], "editor acknowledged key")
+            Learning.queue(mismatch, " ", "", false)
+            same(Learning.confirm(mismatch, "z ", 2, "en_US"), null, "edited word must still match")
+            same(Prediction.suggestions(Prediction.context("HE",2,"en_US"), en.words, {}, {},
+                                        ["herring", "hello"]), ["HERRING", "HELLO", "HELP"],
+                 "personal completions promoted, capitalized and deduplicated")
             same(choices("привет |", "ru_RU"), ["как", "ты", "что"], "Russian next word")
             same(choices("hello how |", "en_US"), ["are", "have", "is"], "trigram before bigram")
             same(choices("привет как д|", "ru_RU"), ["дела"], "contextual one-letter completion")

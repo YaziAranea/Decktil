@@ -46,6 +46,7 @@ class DesktopOskHandoff(unittest.TestCase):
         a.frame_serial = a.held_triggers = a.preloaded = a.last_send = 0
         a.Frame = Mock()
         a.CancelRepeat = Mock()
+        a.PersonalChanged = Mock()
         a.feedback = Mock()
         a.force_samples = [None, None]
         a.click_timers = set()
@@ -102,6 +103,7 @@ class DesktopOskHandoff(unittest.TestCase):
         a.editor_changed()
         self.assertFalse(a.can_route())
         self.assertIsNone(a.verified_pin)
+        a.PersonalChanged.assert_called_once_with()
 
     def test_physical_erase_is_single_edge_released_without_touch(self):
         a = self.adapter
