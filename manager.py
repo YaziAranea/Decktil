@@ -101,6 +101,23 @@ COPY = {
     "personal": ("Личный словарь", "Personal dictionary"),
     "appearance": ("Оформление", "Appearance"),
     "appearance_detail": ("Темы и цвета клавиш", "Themes and key colors"),
+    "chrome": ("Автооткрытие в Chrome", "Reopen in Chrome"),
+    "chrome_off": ("Выключено", "Off"),
+    "chrome_on": ("Включено", "On"),
+    "chrome_mixed": ("Частично настроено", "Partially configured"),
+    "chrome_unavailable": ("Chrome Flatpak недоступен", "Chrome Flatpak unavailable"),
+    "chrome_help": ("На рабочем столе нажмите B, чтобы скрыть Decktil и оставить введённый адрес. Выберите подсказку Chrome мышью или верните указатель в активную адресную строку, чтобы снова открыть клавиатуру.",
+                    "On the desktop, press B to hide Decktil and keep the address you typed. Select a Chrome suggestion with the pointer, or move it back into the active address bar to reopen the keyboard."),
+    "chrome_settings": ("Для автооткрытия Google Chrome из Discover (Flatpak) должен сообщать службе доступности положение поля ввода.",
+                        "To reopen Decktil, Google Chrome from Discover (Flatpak) needs to expose the position of the input field through accessibility services."),
+    "chrome_own": ("Эти параметры уже заданы вне Decktil.", "These settings were already configured outside Decktil."),
+    "chrome_restart": ("После изменения полностью выйдите из Chrome через его меню и снова откройте браузер.",
+                       "After changing these settings, quit Chrome from its menu and reopen it."),
+    "chrome_enable": ("Включить для Chrome", "Enable for Chrome"),
+    "chrome_restore": ("Вернуть прежние настройки", "Restore previous settings"),
+    "chrome_conflict": ("В файле chrome-flags.conf выбран другой режим доступности Chrome. Проверьте параметр renderer-accessibility и повторите.",
+                        "Chrome has a different accessibility mode in chrome-flags.conf. Review its renderer-accessibility flag and try again."),
+    "chrome_saving": ("Сохраняем настройки Chrome…", "Saving Chrome settings…"),
     "learning_on": ("Обучение включено", "Learning on"),
     "learning_off": ("Обучение выключено", "Learning off"),
     "learn": ("Запоминать мои слова и выражения", "Learn my words and phrases"),
@@ -114,8 +131,8 @@ COPY = {
     "clear": ("Очистить", "Clear"),
     "switch_plasma": ("Настраиваем Decktil для трёх режимов…", "Setting up Decktil for all three modes…"),
     "switch_steam": ("Возвращаем клавиатуру Steam…", "Restoring Steam Keyboard…"),
-    "ready_plasma": ("Steam + X открывает и скрывает Decktil. В текстовом поле рабочего стола также работает X. При наборе нажмите X, чтобы стереть символ, или удерживайте для повтора.",
-                     "Steam + X opens and hides Decktil. In a desktop text field, X also opens it. While typing, press X to delete one character or hold it to keep deleting."),
+    "ready_plasma": ("Steam + X открывает и скрывает Decktil. В текстовом поле рабочего стола также работает X. На рабочем столе B скрывает панель и возвращает мышь, сохраняя введённый адрес. X стирает символ, удержание повторяет удаление.",
+                     "Steam + X opens and hides Decktil. In a desktop text field, X also opens it. On the desktop, B hides the panel and restores the mouse while keeping the address you typed. X deletes one character. Hold X to keep deleting."),
     "ready_steam": ("Нажмите Steam + X, чтобы открыть штатную клавиатуру.", "Press Steam + X to open the built-in keyboard."),
     "retry": ("Повторить", "Try again"),
     "details": ("Технические сведения", "Technical details"),
@@ -166,6 +183,8 @@ button.deck-setting { padding: 4px 14px; min-height: 38px; border-radius: 10px; 
 def friendly_error(detail):
     text = detail.lower()
     for key, fragments in (
+        ("chrome_conflict", ("conflicting renderer accessibility flag",)),
+        ("chrome_unavailable", ("google chrome flatpak is not installed",)),
         ("picker_only", ("single registered helper", "existing binding", "use the steam template picker")),
         ("need_exit", ("choose steam > exit", "steam exits")),
         ("desktop", ("wayland session", "desktop user", "plasma wayland")),
@@ -424,6 +443,8 @@ class KeyboardWindow(Gtk.ApplicationWindow):
 
         if self.page in ("personal", "clear_personal"):
             self.personal_page()
+        elif self.page == "chrome":
+            self.chrome_page()
         elif showing_setup:
             self.setup_page()
         elif self.state and self.state["installation"] == "unmanaged":
@@ -437,8 +458,34 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             settings.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
             learning = "learning_on" if self.state.get("personal_enabled") else "learning_off"
             settings.add(self.settings_row("personal", learning, "accessories-dictionary-symbolic"))
+            chrome = self.state["chrome_accessibility"]
+            if chrome != "unavailable" or self.state["chrome_managed"]:
+                settings.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+                settings.add(self.settings_row("chrome", "chrome_" + chrome, "web-browser-symbolic"))
             self.body.pack_start(settings, False, False, 0)
         self.body.show_all()
+
+    def chrome_page(self):
+        box = self.card("chrome")
+        box.set_sensitive(not self.pending and self.state is not None)
+        if self.state is None:
+            return
+        current = self.state["chrome_accessibility"]
+        managed = self.state["chrome_managed"]
+        box.add(label(self.t("chrome_help")))
+        box.add(label(self.t("chrome_settings"), "deck-caption"))
+        box.add(label(self.t("chrome_" + current), "deck-setting-title"))
+        if current in ("on", "mixed") and not managed:
+            box.add(label(self.t("chrome_own"), "deck-caption"))
+        actions = []
+        if current in ("off", "mixed"):
+            actions.append(self.button("chrome_enable", lambda: self.perform(
+                ["chrome", "on"], "chrome_saving", "chrome"), True))
+        if managed:
+            actions.append(self.button("chrome_restore", lambda: self.perform(
+                ["chrome", "off"], "chrome_saving", "chrome")))
+        box.add(label(self.t("chrome_restart"), "deck-caption"))
+        self.actions(box, *actions, self.button("back", lambda: self.navigate("choose"), flat=True))
 
     def personal_page(self):
         box = self.card("personal")
@@ -538,9 +585,11 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             if state["mode"] not in ("steam", "plasma", "mixed") or state["installation"] not in (
                     "managed", "manual", "missing", "unmanaged"):
                 raise ValueError("Unexpected setup status")
-            for key in ("prepared", "can_switch", "setup_complete"):
+            for key in ("prepared", "can_switch", "setup_complete", "chrome_managed"):
                 if not isinstance(state[key], bool):
                     raise ValueError("Missing setup status: " + key)
+            if state["chrome_accessibility"] not in ("unavailable", "off", "on", "mixed"):
+                raise ValueError("Unexpected Chrome setup status")
             session_keyboards(state)  # Reject unknown or missing service states before rendering.
             self.state = state
             self.error = previous_error

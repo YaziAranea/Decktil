@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 
+import browser_config
 from steam_shortcuts import helper_records, lookup
 from src import personal
 
@@ -35,7 +36,7 @@ ROOT = Path.home()/".steam/steam"
 TEMPLATE = ROOT/"controller_base/templates/deck_plasma_keyboard.vdf"
 ABSENT = "__deck_plasma_unset__"
 RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py", "personal.py",
-                 "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml", "DeckGameWordRow.qml",
+                 "popup.py", "suppress-steam-osk.js", "field_return.py", "browser-field-return.js", "DeckSelector.qml", "DeckWordRow.qml", "DeckGameWordRow.qml",
                  "appearance.py", "DeckAppearance.qml", "DeckPalette.qml", "DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml",
                  "DeckPrediction.js", "DeckGrammar.js", "DeckLearning.js", "DeckPersonal.qml",
                  "words/ru.txt.gz", "words/en.txt.gz", "words/ru-morph.json.gz",
@@ -467,7 +468,8 @@ def status(state):
             "setup_complete": kind == "manual" or (kind == "managed" and not first_setup),
             "shortcut_appid": appid, "can_switch": prepared and session,
             "supported_session": session, "recovery_pending": recovery,
-            "personal_enabled": personal.enabled(), **fullscreen_installer().status(UNIT.parent)}
+            "personal_enabled": personal.enabled(), **fullscreen_installer().status(UNIT.parent),
+            **browser_config.status(STATE_DIR / "chrome-accessibility.json")}
 
 
 def configure_personal(selection):
@@ -615,6 +617,51 @@ def runtime_changes(state):
     return changes
 
 
+# Only these v0.4.0 desktop files changed for the B/field-return feature.
+# Early manual installs carried their own shortcut ID and layout discovery in
+# profile.py. Replace only its verified controller-template functions.
+# The second bridge hash and the two field-return hashes identify the tested
+# pre-release build that preceded the final KWin script lifecycle fix.
+MANUAL_BASELINES = {
+    "bridge.py": {"ae15a10f82cb2bc43100fee0ceea2dc840225293b5a3a09fcfe25cb77baeaa76",
+                  "929c810fc4d5d9783f1a84b601a78b79b51ff5ec39038608cee5021d0f696966"},
+    "chord.py": {"15faef7fe5a065b4258474d7ffd13dc65985f622533bff9e50a1f8268c4f9e71"},
+    "field_return.py": {None, "0728de06b9c7d127ae395c4d8e51220965394ee8c466c97cf7a15822a39b4481"},
+    "browser-field-return.js": {None, "356ada906b29bdf16ab48322eec199815785c85841fb923bd01b965b6f004140"},
+}
+OLD_PROFILE_BLOCK = "27441fbd2a7e9d4397b9d1107ba6dc43f059fb967d7daf11b446209cac6ed00b"
+
+
+def manual_runtime_updates():
+    updates = {}
+    for name in (*MANUAL_BASELINES, "profile.py"):
+        path = APP / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise RuntimeError(f"Manual installation contains a modified file: {path}")
+        current = path.read_bytes() if path.is_file() else None
+        wanted = (PACKAGE / "src" / name).read_bytes()
+        if current == wanted:
+            continue
+        if name == "profile.py":
+            start = b"def controller_mappings("
+            stop = b"def watch_refresh("
+            new = wanted[wanted.index(start):wanted.index(stop)]
+            if current is not None and new in current:
+                continue
+            old_start = b"def default_button_binding("
+            if current is not None and current.count(old_start) == 1 and current.count(stop) == 1:
+                begin, end = current.index(old_start), current.index(stop)
+                if digest(current[begin:end]) == OLD_PROFILE_BLOCK:
+                    updates[name] = (current, current[:begin] + new + current[end:])
+                    continue
+        elif (digest(current) if current is not None else None) in MANUAL_BASELINES[name]:
+            updates[name] = (current, wanted)
+            continue
+        raise RuntimeError(f"Manual installation contains a modified file: {path}. "
+                           "Merge the Decktil update with your local changes before applying it.")
+    return updates
+
+
 def restore_all(fullscreen, pending):
     # Stop new fullscreen workers before restoring the desktop service they depend on.
     if pending["fullscreen"] and pending.get("fullscreen_touched"):
@@ -622,6 +669,11 @@ def restore_all(fullscreen, pending):
     if "backup" in pending:
         backup = STATE_DIR / pending["backup"]
         for name in pending.get("backed_up", pending["changes"]):
+            if name in pending.get("manual_written", {}):
+                target = APP / name
+                if (target.is_symlink() or not target.is_file()
+                        or digest(target.read_bytes()) != pending["manual_written"][name]):
+                    continue
             previous = backup / name
             if previous.is_file():
                 save(APP / name, previous.read_bytes(), previous.stat().st_mode & 0o777)
@@ -666,12 +718,14 @@ def switch_all(state, choice, *, uninstall=False):
             if uninstall:
                 fullscreen.uninstall(UNIT.parent)
             return
-        changes = runtime_changes(state) if choice == "plasma" and kind == "managed" else []
+        manual = manual_runtime_updates() if choice == "plasma" and kind == "manual" else {}
+        changes = runtime_changes(state) if choice == "plasma" and kind == "managed" else list(manual)
         # Verify all host dependencies and the immutable snapshot before switching anything.
         release = fullscreen.prepare_release() if choice == "plasma" else None
         pending = {"desktop": snapshot() if has_desktop else None, "fullscreen": before,
                    "mode": load_mode(), "manifest": load_manifest() if MANIFEST.exists() else None,
-                   "changes": changes, "fullscreen_touched": False}
+                   "changes": changes, "fullscreen_touched": False,
+                   "manual_written": {name: digest(new) for name, (_, new) in manual.items()}}
         backed_up = list(changes)
         if choice == "plasma" and kind == "managed" and not state.get("enabled"):
             # enable() creates or refreshes the helper AppID before checking Steam.
@@ -691,8 +745,15 @@ def switch_all(state, choice, *, uninstall=False):
         save(transaction_file(), json.dumps(pending).encode())
         try:
             for name in changes:
-                managed_file(state, APP / name, (PACKAGE / "src" / name).read_bytes(),
-                             0o755 if name == "keyboard.py" else 0o644)
+                if name in manual:
+                    path = APP / name
+                    current = path.read_bytes() if path.is_file() else None
+                    if path.is_symlink() or current != manual[name][0]:
+                        raise RuntimeError(f"Manual installation changed during the update: {path}")
+                    save(path, manual[name][1], path.stat().st_mode & 0o777 if current is not None else 0o644)
+                else:
+                    managed_file(state, APP / name, (PACKAGE / "src" / name).read_bytes(),
+                                 0o755 if name == "keyboard.py" else 0o644)
             pending["fullscreen_touched"] = True
             save(transaction_file(), json.dumps(pending).encode())
             if choice == "plasma":
@@ -704,8 +765,9 @@ def switch_all(state, choice, *, uninstall=False):
             if choice == "plasma":
                 if changes and pending["desktop"]["active"]:
                     # Reload the updated desktop bridge and let KWin relaunch its input method.
-                    set_method(None)
-                    set_method(str(ENTRY))
+                    if not manual:
+                        set_method(None)
+                        set_method(str(ENTRY))
                     cmd("systemctl", "--user", "restart", UNIT_NAME)
                     check = snapshot()
                     if effective_mode(check) != "plasma":
@@ -755,10 +817,10 @@ def remove(state):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "bind", "enable", "remove", "status", "mode", "disable", "personal"))
+    parser.add_argument("action", choices=("prepare", "bind", "enable", "remove", "status", "mode", "disable", "personal", "chrome"))
     parser.add_argument("selection", nargs="?")
     args=parser.parse_args()
-    choices = {"mode": ("plasma", "steam"), "personal": ("on", "off", "clear")}
+    choices = {"mode": ("plasma", "steam"), "personal": ("on", "off", "clear"), "chrome": ("on", "off")}
     if args.action in choices:
         if args.selection not in choices[args.action]:
             parser.error(f"{args.action} requires one of {', '.join(choices[args.action])}")
@@ -773,6 +835,9 @@ def main():
     STATE_DIR.mkdir(mode=0o700,parents=True,exist_ok=True)
     with (STATE_DIR/"setup.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.action == "chrome":
+            browser_config.configure(args.selection, STATE_DIR / "chrome-accessibility.json")
+            return
         state=load_manifest()
         if args.action in ("mode", "disable"):
             switch_all(state, args.selection or "steam")
@@ -781,6 +846,7 @@ def main():
         elif args.action == "remove":
             switch_all(state, "steam", uninstall=True)
             remove(load_manifest())
+            browser_config.configure("off", STATE_DIR / "chrome-accessibility.json")
         else:
             {"prepare":prepare,"bind":bind,"enable":enable,"remove":remove}[args.action](state)
 

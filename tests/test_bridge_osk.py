@@ -34,7 +34,7 @@ class DesktopOskHandoff(unittest.TestCase):
         a.ready = a.visible = True
         a.locked = a.in_game = False
         a.chord = Mock(last_desktop_osk=10, stage=None, armed=False, stock_open=False, echo_until=0,
-                       client_ui=False)
+                       client_ui=False, dismiss_b_held=False)
         a.chord.update.return_value = False
         a.chord._state.return_value = dict(visible=True, available=True, active=True, mode=1,
                                           activeClientSupportsTextInput=True)
@@ -47,6 +47,7 @@ class DesktopOskHandoff(unittest.TestCase):
         a.erase_serial = None
         a.erase_release_deadline = 0.0
         a.frame_serial = a.held_triggers = a.preloaded = a.last_send = 0
+        a.field_return = Mock()
         a.Frame = Mock()
         a.CancelRepeat = Mock()
         a.PersonalChanged = Mock()
@@ -158,9 +159,8 @@ class DesktopOskHandoff(unittest.TestCase):
     def test_physical_erase_is_single_edge_released_without_touch(self):
         a = self.adapter
         report = self.physical_reports()
-        # First report with X already down, and B-only taps, have no editing edge.
+        # A first report with X already down has no editing edge.
         report(True)
-        report(b=True)
         report()
         for x in (True, True, False, True, False):
             report(x)
@@ -180,6 +180,88 @@ class DesktopOskHandoff(unittest.TestCase):
         a.chord._desktop_x_enabled.return_value = False
         report(True); report(False)
         self.assertFalse(any(call.args[5] for call in a.Frame.call_args_list))
+
+    def test_b_stops_held_x_and_releases_mouse_without_editing_again(self):
+        a = self.adapter
+        report = self.physical_reports()
+        a.sync_profile = Mock()
+        report()
+        report(True)
+        serial = a.erase_serial
+        a.Frame.reset_mock()
+        report(True, b=True, pad=True)
+        a.chord._request.assert_called_once_with(False)
+        a.CancelRepeat.assert_called_once_with()
+        a.field_return.arm.assert_called_once_with()
+        a.Frame.assert_called_once_with(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        a.CloseOnEmpty(serial)
+        self.assertIsNone(a.erase_serial)
+        a.visible = False
+        report(True, b=True)
+        a.sync_profile.assert_not_called()
+        report(True)
+        a.sync_profile.assert_called_once_with()
+        report(True)
+        a.chord._request.assert_called_once_with(False)
+
+    def test_hidden_profile_releases_after_b_up_or_loss_of_reports(self):
+        a = self.adapter
+        report = self.physical_reports()
+        a.job = None
+        a.panel_epoch = 1
+        start = self.enterContext(patch.object(bridge.subprocess, "Popen"))
+        self.enterContext(patch.object(bridge.GLib, "timeout_add"))
+        report()
+        report(b=True)
+        a.visible = False
+        a.sync_profile()
+        start.assert_not_called()
+        report(b=True)
+        report()
+        self.assertEqual(start.call_args.args[0][-1], "leave")
+        start.reset_mock()
+        a.job = None
+        a.visible = True
+        report(b=True)
+        a.visible = False
+        self.clock.return_value += 1
+        a.sync_profile()
+        self.assertEqual(start.call_args.args[0][-1], "leave")
+
+    def test_pointer_reentry_rechecks_hidden_desktop_and_support_for_text(self):
+        a = self.adapter
+        a.visible = False
+        a.chord.b = False
+        state = a.chord._state.return_value
+        state.update(visible=False, active=False)
+        self.assertTrue(a.reopen_browser_field())
+        a.chord._request.assert_called_once_with(True)
+        a.chord._request.reset_mock()
+        state["activeClientSupportsTextInput"] = False
+        self.assertFalse(a.reopen_browser_field())
+        state["activeClientSupportsTextInput"] = True
+        for obj, flag in [(a, "visible"), (a, "locked"), (a, "in_game"),
+                          (a.chord, "b"), (a.chord, "client_ui")]:
+            with patch.object(obj, flag, True):
+                self.assertFalse(a.reopen_browser_field())
+        a.chord._request.assert_not_called()
+
+    def test_b_needs_a_new_bare_edge_on_a_visible_desktop_panel(self):
+        a = self.adapter
+        report = self.physical_reports()
+        report(b=True)
+        report()
+        report(b=True, guide=True)
+        report(b=True)
+        a.visible = False
+        report()
+        report(b=True)
+        a.visible = True
+        report(b=True)
+        report()
+        a.chord._request.assert_not_called()
+        report(b=True)
+        a.chord._request.assert_called_once_with(False)
 
     def test_modifier_and_profile_changes_cannot_rearm_a_held_press(self):
         a = self.adapter

@@ -16,7 +16,7 @@ class MenuInstallTests(unittest.TestCase):
         self.source = root / "unpacked release"
         self.data = root / "app data"
         self.source.mkdir()
-        for name in (start.LAUNCHER, "appearance_page.py", "setup.py", "steam_shortcuts.py", "INSTALL.md", "LICENSE"):
+        for name in (start.LAUNCHER, "appearance_page.py", "browser_config.py", "setup.py", "steam_shortcuts.py", "INSTALL.md", "LICENSE"):
             shutil.copyfile(start.SOURCE / name, self.source / name)
         shutil.copytree(start.SOURCE / "src", self.source / "src", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(start.SOURCE / "experimental/gaming", self.source / "experimental/gaming",

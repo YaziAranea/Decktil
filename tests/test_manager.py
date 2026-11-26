@@ -28,6 +28,8 @@ elif len(args) == 2 and args[0] == 'mode':
     service = "enabled" if args[1] == "plasma" else "disabled"
     state.update(mode=args[1], setup_complete=True, big_picture=service, gaming_mode=service,
                  switches=state.get("switches", 0) + 1)
+elif len(args) == 2 and args[0] == 'chrome':
+    state.update(chrome_accessibility=args[1], chrome_managed=args[1] == 'on')
 elif len(args) == 2 and args[0] == 'personal':
     if args[1] == 'clear':
         state['cleared'] = True
@@ -123,6 +125,16 @@ def private_session(root):
     finish()
     assert window.state["mode"] == "plasma"
     assert manager.preferred_language() == 1
+    assert has_text(window.t("ready_plasma"))
+    click("chrome")
+    assert has_text(window.t("chrome_off")) and has_text(window.t("chrome_restart"))
+    click("chrome_enable")
+    finish()
+    assert window.page == "chrome" and has_text(window.t("chrome_on"))
+    click("chrome_restore")
+    finish()
+    assert has_text(window.t("chrome_off"))
+    click("back")
     click("personal")
     click("learn")
     finish()
@@ -174,10 +186,20 @@ def private_session(root):
     assert appearance.load()["preset"] == "default"
     fixture = root / "state.json"
     state = json.loads(fixture.read_text())
-    state.update(installation="manual", big_picture="missing", gaming_mode="disabled")
+    # Previously configured Chrome remains under the user’s control.
+    state["chrome_accessibility"] = "on"
     fixture.write_text(json.dumps(state))
     click("refresh")
     finish()
+    click("chrome")
+    assert has_text(window.t("chrome_own")) and not has_text(window.t("chrome_restore"))
+    click("back")
+    state.update(installation="manual", big_picture="missing", gaming_mode="disabled",
+                 chrome_accessibility="unavailable")
+    fixture.write_text(json.dumps(state))
+    click("refresh")
+    finish()
+    assert not has_text(window.t("chrome"))
     assert window.state["installation"] == "manual" and has_text(window.t("current_mixed"))
     click("plasma")
     finish()
@@ -207,6 +229,7 @@ class NativeManager(unittest.TestCase):
             (root / "state.json").write_text(json.dumps(dict(
                 installation="missing", mode="steam", prepared=False,
                 can_switch=False, setup_complete=False, big_picture="missing", gaming_mode="missing",
+                chrome_accessibility="off", chrome_managed=False,
             )))
             (root / "bus.conf").write_text(BUS)
             env = dict(os.environ, HOME=str(root / "home"), XDG_RUNTIME_DIR=str(root / "runtime"),

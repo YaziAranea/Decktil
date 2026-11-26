@@ -103,7 +103,7 @@ def _steam_request(action):
 
 
 class SteamChord:
-    """Open or edit with desktop X, and toggle the panel with Steam+X."""
+    """Use desktop X to open/edit, B to dismiss, and Steam+X to toggle."""
 
     def __init__(self, session_bus):
         self.enabled = (
@@ -118,7 +118,9 @@ class SteamChord:
         self.panel = dbus.Interface(proxy, KEYBOARD_INTERFACE)
         self.stage = None
         self.timer = 0
-        self.x = None
+        self.x = self.b = None
+        self.dismiss_b_held = False
+        self.last_dismiss_report = 0.0
         self.armed = False
         self.edit_echo = False
         self.want_open = False
@@ -151,7 +153,9 @@ class SteamChord:
             self.timer = 0
         self._restore_mode()
         self.stage = None
-        self.x = None
+        self.x = self.b = None
+        self.dismiss_b_held = False
+        self.last_dismiss_report = 0.0
         self.armed = False
         self.edit_echo = False
         self.echo_until = 0.0
@@ -281,6 +285,8 @@ class SteamChord:
         # Steam's action is a second observation of either physical shortcut.
         # An editing press may already have erased the last character and
         # closed Plasma. Its Steam notification must never reopen the panel.
+        if self.dismiss_b_held:
+            return
         if self.armed or now <= self.echo_until:
             if not self.edit_echo:
                 self._request(self.want_open)
@@ -305,15 +311,25 @@ class SteamChord:
         except (OSError, ValueError, RuntimeError):
             return False
 
-    def update(self, guide_down, x_down):
+    def update(self, guide_down, x_down, b_down=False, *, panel_visible=False):
         """Return True once for bare X pressed on an already open panel."""
         if not self.enabled:
             return False
-        previous, self.x = self.x, bool(x_down)
-        if previous is not False or not x_down:
-            if self.armed and not x_down:
-                self.armed = False
-                self.echo_until = time.monotonic() + 0.85
+        previous_x, self.x = self.x, bool(x_down)
+        previous_b, self.b = self.b, bool(b_down)
+        if self.dismiss_b_held:
+            self.last_dismiss_report = time.monotonic()
+            if not b_down:
+                self.dismiss_b_held = False
+                self.echo_until = self.last_dismiss_report + 0.85
+            # Consume any overlapping X through release, including its HID edge.
+            return False
+        dismiss = panel_visible and previous_b is False and b_down and not guide_down
+        x_press = previous_x is False and x_down
+        if self.armed and not x_down:
+            self.armed = False
+            self.echo_until = time.monotonic() + 0.85
+        if not (dismiss or x_press):
             return False
         # The controller can deliver X before the periodic log poll. Consume
         # a new focus transition before requesting a KWin panel over Steam.
@@ -330,6 +346,17 @@ class SteamChord:
             return False
         if not state.get("activeClientSupportsTextInput") and _fullscreen_steam():
             # The first button can precede even Steam's ClientUI log entry.
+            return False
+        if dismiss and state.get("visible"):
+            # Hide KWin directly. Escape would dismiss Chromium's suggestions.
+            self.dismiss_b_held = True
+            self.last_dismiss_report = time.monotonic()
+            self.recent_log_open = None
+            self.armed = False
+            self.edit_echo = True
+            self._request(False)
+            return False
+        if not x_press:
             return False
         if not guide_down and not ((state.get("visible") or state.get("activeClientSupportsTextInput"))
                                    and self._desktop_x_enabled()):

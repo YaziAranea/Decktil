@@ -19,6 +19,7 @@ from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib, GLibUnix
 
 from chord import SteamChord
+from field_return import BrowserFieldReturn
 from haptics import TrackpadFeedback
 from popup import SteamPopupGuard
 import personal
@@ -84,6 +85,7 @@ class Bridge(dbus.service.Object):
         self.name = dbus.service.BusName(INTERFACE, bus, do_not_queue=True)
         super().__init__(self.name, "/Pads")
         self.chord = SteamChord(bus)
+        self.field_return = BrowserFieldReturn(bus, self.reopen_browser_field)
         self.popup_guard = SteamPopupGuard(bus)
         self.props = self.chord.properties
         self.fd = None
@@ -253,6 +255,25 @@ class Bridge(dbus.service.Object):
         return all(state.get(k) for k in ("visible", "active", "available", "mode",
                                            "activeClientSupportsTextInput"))
 
+    def reopen_browser_field(self):
+        # The browser observer verifies the same field and a fresh pointer
+        # return. Recheck the desktop session just before activating KWin.
+        if (self.locked or self.in_game or self.fd is None or self.visible or
+                self.chord.b or not self.chord.enabled):
+            return False
+        self.chord.poll_desktop_actions()
+        try:
+            if self.chord.client_ui or mapping.running_game():
+                return False
+        except OSError:
+            return False
+        state = self.chord._state()
+        required = ("available", "mode", "activeClientSupportsTextInput")
+        if state.get("visible") or not all(state.get(key) for key in required):
+            return False
+        self.chord._request(True)
+        return True
+
     def editor_changed(self):
         if self.visible and not self.recovery_editor():
             self.PersonalChanged()
@@ -261,6 +282,7 @@ class Bridge(dbus.service.Object):
                 self.stop_input()
 
     def close_device(self):
+        self.field_return.cancel()
         self.panel_epoch += 1
         self.popup_guard.set_enabled(False)
         if self.fd is not None:
@@ -284,7 +306,17 @@ class Bridge(dbus.service.Object):
                     continue
                 x_down = bool(report[8] & 0x40)
                 guide_down = bool(report[9] & 0x20)
-                erase_edge = self.chord.update(guide_down, x_down)
+                b_down = bool(report[8] & 0x20)
+                dismiss_was_held = self.chord.dismiss_b_held
+                erase_edge = self.chord.update(guide_down, x_down, b_down, panel_visible=self.visible)
+                if self.chord.dismiss_b_held:
+                    if not dismiss_was_held:
+                        self.stop_input()
+                        self.field_return.arm()
+                    continue
+                if dismiss_was_held:
+                    self.sync_profile()
+                    continue
                 if self.chord.client_ui:
                     if self.update_input_owner():
                         self.visibility()
@@ -377,6 +409,7 @@ class Bridge(dbus.service.Object):
         self.locked = bool(locked)
         self.PersonalChanged()
         if self.locked:
+            self.field_return.cancel()
             self.popup_guard.set_enabled(False)
         self.chord.reset()
         self.sync_profile()
@@ -389,6 +422,8 @@ class Bridge(dbus.service.Object):
         except dbus.DBusException:
             state = {}
             self.visible = False
+        if self.visible and not was_visible:
+            self.field_return.cancel()
         if self.visible != was_visible:
             self.panel_epoch += 1
             self.PersonalChanged()
@@ -409,7 +444,11 @@ class Bridge(dbus.service.Object):
         wanted = self.visible and self.fd is not None and not self.locked and not self.in_game
         if not wanted:
             self.stop_input()
-        if self.job is not None:
+        # Rebinding a still-held B to the desktop Escape/Backspace could send
+        # it to the browser. Release the helper on key-up; a silent or detached
+        # HID must not strand the mouse in the helper profile.
+        if self.job is not None or (self.chord.dismiss_b_held and
+                                    time.monotonic() - self.chord.last_dismiss_report < .4):
             return
         if wanted and not self.ready:
             if time.monotonic() < self.retry or (self.chord.stage and not self.chord.want_open):
@@ -520,6 +559,7 @@ class Bridge(dbus.service.Object):
         self.panel_epoch += 1
         self.PersonalChanged()
         if native:
+            self.field_return.cancel()
             self.chord.reset()
             self.stop_input()
             self.popup_guard.set_enabled(False)
@@ -572,6 +612,7 @@ def main():
         loop.run()
     finally:
         bridge.close_device()
+        bridge.field_return.close()
         if bridge.job:
             bridge.job.wait(timeout=8)
 

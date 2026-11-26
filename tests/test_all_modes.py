@@ -35,6 +35,7 @@ class AllModes(unittest.TestCase):
         self.enterContext(patch.object(self.fullscreen, "prepare_release", side_effect=self.release))
         self.flags = {name: {"active": False, "enabled": False} for name in self.fullscreen.UNITS}
         self.enterContext(patch.object(self.fullscreen, "systemctl", side_effect=self.systemctl))
+        self.enterContext(patch.object(setup, "manual_runtime_updates", return_value={}))
         self.fail_restart = False
 
     def release(self):

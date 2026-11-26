@@ -70,6 +70,24 @@ class KeyboardActions(unittest.TestCase):
         self.action._advance()
         self.assertTrue(self.action.update(False, True))
 
+    def test_b_dismisses_without_forwarding_a_late_x_keyboard_request(self):
+        self.state["visible"] = True
+        self.assertTrue(self.action.update(False, True))
+        self.assertFalse(self.action.update(False, True, True, panel_visible=True))
+        self.action._advance()
+        self.action.properties.Set.assert_called_once_with(
+            chord.KEYBOARD_INTERFACE, "active", False, timeout=0.4)
+        self.state["visible"] = False
+        self.action._advance()
+        self.now.return_value += 3
+        self.action._desktop_opened()
+        self.assertIsNone(self.action.stage)
+        self.action.update(False, False, False)
+        self.action._desktop_opened()
+        self.assertIsNone(self.action.stage)
+        self.assertFalse(self.action.update(False, True))
+        self.assertEqual(self.action.stage, "activate")
+
     def test_second_x_during_cold_start_keeps_open_request(self):
         self.action.update(False, True)
         self.action.update(False, False)
@@ -211,7 +229,7 @@ class KeyboardActions(unittest.TestCase):
         saved.write_text(custom)
         self.assertEqual(chord.mapping.inherited_template(saved), custom)
 
-    def test_temporary_profile_inherits_desktop_b(self):
+    def test_temporary_profile_reserves_b_for_dismiss(self):
         config = '''"controller_mappings" { "controller_type" "controller_neptune"
           "group" {"id" "1" "inputs" {
               "button_b" {"activators" {"Full_Press" {"bindings" {"binding" "key_press ESCAPE, , "}}}}
@@ -220,9 +238,11 @@ class KeyboardActions(unittest.TestCase):
           "preset" {"id" "0" "group_source_bindings" {"1" "button_diamond active"}}
         }'''
         source = self.root / "desktop"
-        for layout in (config, config.replace("ESCAPE", "RETURN"), config.replace("Full_Press", "Long_Press")):
+        for key, press in (("ESCAPE", "Full_Press"), ("RETURN", "Full_Press"), ("BACKSPACE", "Long_Press")):
+            layout = config.replace("ESCAPE", key).replace("Full_Press", press)
             source.write_text(layout)
-            self.assertEqual(chord.mapping.inherited_template(source), layout)
+            binding = f'"binding" "key_press {key}, , "'
+            self.assertEqual(chord.mapping.inherited_template(source), layout.replace(binding, "", 1))
             self.assertEqual(source.read_text(), layout)
 
 

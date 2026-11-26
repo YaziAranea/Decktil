@@ -136,8 +136,8 @@ def desktop_source():
     raise RuntimeError("No current Steam Desktop Neptune layout found. Save a personal Desktop Layout in Steam first.")
 
 
-def default_button_binding(layout, button_name, expected_action):
-    """Find a sole unambiguous Full_Press action in the default desktop action set."""
+def controller_mappings(layout):
+    """Keep token offsets so changes to the helper preserve unrelated bindings verbatim."""
     tokens = (match for match in re.finditer(r'"(?:\\.|[^"\\])*"|[{}]|//[^\n]*', layout)
               if not match[0].startswith("//"))
 
@@ -152,23 +152,30 @@ def default_button_binding(layout, button_name, expected_action):
             pairs.append((name, read_pairs() if value[0] == "{" else value))
         return pairs
 
-    def children(pairs, key):
-        return [v for n, v in pairs if n[0][1:-1] == key] if isinstance(pairs, list) else []
+    return first(read_pairs(), "controller_mappings")
 
-    def first(pairs, key):
-        return next(iter(children(pairs, key)), None)
 
-    def text(value):
-        return value[0][1:-1] if isinstance(value, re.Match) else None
+def children(pairs, key):
+    return [v for n, v in pairs if n[0][1:-1] == key] if isinstance(pairs, list) else []
 
-    root = first(read_pairs(), "controller_mappings")
+
+def first(pairs, key):
+    return next(iter(children(pairs, key)), None)
+
+
+def text(value):
+    return value[0][1:-1] if isinstance(value, re.Match) else None
+
+
+def stock_keyboard_binding(root):
+    """Find a sole unambiguous X keyboard action in the default desktop action set."""
     default = next((p for p in children(root, "preset") if text(first(p, "id")) == "0"), None)
     sources = first(default, "group_source_bindings") or []
     diamond = next((text(group) for group, source in sources if text(source) == "button_diamond active"), None)
     if diamond is None:
         return None
     group = next((g for g in children(root, "group") if text(first(g, "id")) == diamond), None)
-    button = first(first(group, "inputs"), button_name)
+    button = first(first(group, "inputs"), "button_x")
     activators = first(button, "activators") or []
     if not isinstance(activators, list) or [text(name) for name, _ in activators] != ["Full_Press"]:
         return None
@@ -177,25 +184,47 @@ def default_button_binding(layout, button_name, expected_action):
         return None
     name, value = bindings[0]
     binding = text(value)
-    if text(name) == "binding" and binding and binding.split(",", 1)[0].strip() == expected_action:
+    if text(name) == "binding" and binding and binding.split(",", 1)[0].strip() == "controller_action SHOW_KEYBOARD":
         return name.start(), value.end()
     return None
 
 
 def keyboard_x_binding(layout):
-    return default_button_binding(layout, "button_x", "controller_action SHOW_KEYBOARD")
+    return stock_keyboard_binding(controller_mappings(layout))
+
+
+def face_b_bindings(root):
+    # In the helper the physical B is handled from HID. Remove Steam outputs for
+    # all action sets and activators, including release, double-press and turbo.
+    face_groups = {text(group) for preset in children(root, "preset")
+                   for group, source in (first(preset, "group_source_bindings") or [])
+                   if (text(source) or "").partition(" ")[0] == "button_diamond"}
+
+    def commands(pairs):
+        for key, value in pairs:
+            if isinstance(value, list):
+                yield from commands(value)
+            elif text(key) == "binding":
+                yield key.start(), value.end()
+
+    for group in children(root, "group"):
+        if text(first(group, "id")) in face_groups:
+            for button in children(first(group, "inputs"), "button_b"):
+                if isinstance(button, list):
+                    yield from commands(button)
 
 
 def inherited_template(source):
     original = source.read_text()
     if '"controller_neptune"' not in original or '"group_source_bindings"' not in original:
         raise RuntimeError("Unexpected Steam Deck desktop configuration")
-    # The bridge handles the stock X keyboard action while the panel is open.
-    # Inherit B and any custom X bindings from the current desktop layout.
-    binding = keyboard_x_binding(original)
+    root = controller_mappings(original)
+    spans = list(face_b_bindings(root))
+    binding = stock_keyboard_binding(root)
     if binding:
-        first, last = binding
-        original = original[:first] + original[last:]
+        spans.append(binding)
+    for start, end in sorted(spans, reverse=True):
+        original = original[:start] + original[end:]
     result = ACTION.sub(r'\1inactive\2', original).replace(str(source), str(TEMPLATE.resolve()))
     return re.sub(r'(?m)^(\s*"title"\s*)"[^"\n]*"', r'\1"Deck Plasma Keyboard"', result, count=1)
 

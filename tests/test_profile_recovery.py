@@ -15,7 +15,31 @@ spec.loader.exec_module(profile)
 
 
 class TemplateMigration(unittest.TestCase):
-    def test_enter_reloads_old_template_with_desktop_b_and_rear_bindings(self):
+    def test_helper_mutes_all_b_activators_across_sets_and_only_for_face_buttons(self):
+        layout = '''"controller_mappings" { "controller_type" "controller_neptune"
+          "group" {"id" "1" "inputs" {"button_b" {"activators" {
+            "Full_Press" {"bindings" {"binding" "key_press ESCAPE"}}
+            "Release_Press" {"bindings" {"binding" "key_press BACKSPACE"}}
+          }}}}
+          "group" {"id" "2" "inputs" {"button_b" {"activators" {
+            "Long_Press" {"bindings" {"binding" "xinput_button B"} "settings" {"hold_time" "30"}}
+          }}}}
+          "group" {"id" "3" "inputs" {"button_b" {"activators" {
+            "Full_Press" {"bindings" {"binding" "key_press LEFT"}}
+          }}}}
+          "preset" {"id" "0" "group_source_bindings" {"1" "button_diamond active" "3" "dpad active"}}
+          "preset" {"id" "1" "group_source_bindings" {"2" "button_diamond active"}}
+        }'''
+        expected = layout
+        for action in ("key_press ESCAPE", "key_press BACKSPACE", "xinput_button B"):
+            expected = expected.replace(f'"binding" "{action}"', "")
+        with tempfile.TemporaryDirectory() as tmp:
+            desktop = Path(tmp) / "desktop.vdf"
+            desktop.write_text(layout)
+            self.assertEqual(profile.inherited_template(desktop), expected)
+            self.assertEqual(desktop.read_text(), layout)
+
+    def test_enter_removes_legacy_b_bindings_and_preserves_rear_buttons(self):
         layout = '''"controller_mappings" {
           "controller_type" "controller_neptune"
           "group" {"id" "1" "inputs" {
@@ -32,7 +56,8 @@ class TemplateMigration(unittest.TestCase):
             digest = root / "template.sha256"
             desktop.write_text(layout)
             expected = layout.replace('"binding" "controller_action SHOW_KEYBOARD, , "', "")
-            template.write_text(expected.replace('"binding" "key_press ESCAPE, , "', ""))
+            template.write_text(expected)  # The older helper still forwarded B to Steam.
+            expected = expected.replace('"binding" "key_press ESCAPE, , "', "")
             keyboard = 0x80001234
             selected = profile.DESKTOP
 
