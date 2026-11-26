@@ -144,6 +144,22 @@ QtObject {
         emptyCheckTimer.restart()
     }
 
+    function checkReachable(key, reverse) {
+        // Queue the return with the probe. A subsequent key from the Deck
+        // must always reach the editor with the caret at its original start.
+        InputContext.inputEngine.virtualKeyClick(key, "", Qt.NoModifier)
+        InputContext.inputEngine.virtualKeyClick(reverse, "", Qt.NoModifier)
+    }
+
+    function observeProbe() {
+        if (!caretCheckAt || !layout.visible || emptyCheckInputItem !== InputContext.inputItem)
+            return
+        const text = InputContext.surroundingText
+        // Qt can report surrounding text relative to the new paragraph.
+        if (InputContext.cursorPosition > 0 || (confirmEmptyAfter && text.length && text !== "\n"))
+            cancelEmptyCheck()
+    }
+
     function refreshEditor() {
         // Plasma receives surrounding text and caret changes asynchronously.
         // Re-query its focused input listener before deciding to dismiss.
@@ -237,11 +253,7 @@ QtObject {
             if (selector.caretCheckAt && (pos > 0 || reachedNextParagraph) && pos === InputContext.anchorPosition
                     && !InputContext.selectedText.length && !InputContext.preeditText.length
                     && !(InputContext.inputMethodHints & (Qt.ImhHiddenText | Qt.ImhSensitiveData))) {
-                // A navigation key moved the caret away from the original
-                // start. Undo that move in the same field.
-                const restoreKey = selector.probingToEnd ? Qt.Key_Home : Qt.Key_Up
                 selector.cancelEmptyCheck()
-                InputContext.inputEngine.virtualKeyClick(restoreKey, "", Qt.NoModifier)
             } else if (!selector.atUnselectedStart() || (text !== "" && text !== "\n")) {
                 // The editor may still be reporting the state before Backspace.
                 // A later poll can see its reply even after a quick tap.
@@ -253,14 +265,14 @@ QtObject {
                 if (now >= selector.confirmEmptyAfter) {
                     selector.probingToEnd = true
                     selector.caretCheckAt = now + 85
-                    InputContext.inputEngine.virtualKeyClick(Qt.Key_End, "", Qt.NoModifier)
+                    selector.checkReachable(Qt.Key_End, Qt.Key_Home)
                 }
             } else if (selector.probingToEnd && now >= selector.caretCheckAt) {
                 // End also stays put on an empty first line of a multiline
                 // field. Down distinguishes it from a genuinely empty editor.
                 selector.probingToEnd = false
                 selector.caretCheckAt = now + 90
-                InputContext.inputEngine.virtualKeyClick(Qt.Key_Down, "", Qt.NoModifier)
+                selector.checkReachable(Qt.Key_Down, Qt.Key_Up)
             } else if ((!text.length && !selector.caretCheckAt)
                     || (!selector.probingToEnd && selector.caretCheckAt && now >= selector.caretCheckAt)) {
                 const serial = selector.emptyCheckSerial
@@ -273,12 +285,14 @@ QtObject {
                 // Down can reach a real next line, but not that decoration.
                 // Avoid Right, which can accept an inline completion in Codex.
                 selector.caretCheckAt = now + 115
-                InputContext.inputEngine.virtualKeyClick(Qt.Key_Down, "", Qt.NoModifier)
+                selector.checkReachable(Qt.Key_Down, Qt.Key_Up)
             }
         }
     }
     property Connections editorFocus: Connections {
         target: InputContext
+        function onSurroundingTextChanged() { selector.observeProbe() }
+        function onCursorPositionChanged() { selector.observeProbe() }
         function onInputItemChanged() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
         function onLocaleChanged() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
     }
