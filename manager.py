@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Desktop mode switch and guided first-run setup for Steam Deck."""
+"""Guided setup and keyboard selection for Steam Deck."""
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -49,22 +49,30 @@ COPY = {
     "language": ("Язык интерфейса", "Interface language"),
     "heading": ("Экранная клавиатура", "On-screen keyboard"),
     "checking": ("Проверяем, какая клавиатура включена…", "Checking the active keyboard…"),
-    "current_plasma": ("Сейчас используется клавиатура Plasma.", "Plasma Keyboard is active."),
-    "current_steam": ("Сейчас используется клавиатура Steam.", "Steam Keyboard is active."),
-    "current_mixed": ("Настройки клавиатуры расходятся. Выберите клавиатуру, чтобы применить её настройки.",
-                      "The keyboard settings disagree. Choose a keyboard to apply its settings."),
+    "current_plasma": ("Decktil включён во всех трёх режимах.", "Decktil is enabled in all three modes."),
+    "current_steam": ("Во всех трёх режимах выбрана клавиатура Steam.", "The Steam keyboard is selected in all three modes."),
+    "current_mixed": ("Режимы настроены по-разному. Выберите клавиатуру для всех трёх.",
+                      "The modes have different settings. Choose a keyboard for all three."),
+    "desktop_mode": ("Рабочий стол KDE", "KDE Desktop"),
+    "big_picture": ("Big Picture на рабочем столе", "Big Picture on the desktop"),
+    "gaming_mode": ("Игровой режим SteamOS", "SteamOS Gaming Mode"),
+    "provider_plasma": ("Decktil", "Decktil"),
+    "provider_steam": ("Steam", "Steam"),
+    "provider_foreign": ("Другая установка", "Other installation"),
+    "provider_mixed": ("Нужна настройка", "Needs setup"),
     "recover": ("Предыдущее переключение прервалось. Выберите клавиатуру, чтобы завершить настройку.",
                 "The last switch was interrupted. Choose a keyboard to finish setup."),
-    "plasma": ("Использовать Plasma", "Use Plasma"),
+    "plasma": ("Включить Decktil", "Enable Decktil"),
+    "reapply": ("Обновить Decktil", "Update Decktil"),
     "plasma_detail": ("Два трекпада и триггеры", "Two trackpads and triggers"),
-    "steam": ("Использовать Steam", "Use Steam"),
+    "steam": ("Вернуть Steam", "Restore Steam"),
     "steam_detail": ("Родная клавиатура Deck", "Built-in Deck keyboard"),
     "active": ("Выбрана", "Selected"),
-    "setup_title": ("Первое включение Plasma", "Set up Plasma Keyboard"),
+    "setup_title": ("Первое включение Decktil", "Set up Decktil"),
     "setup_intro": ("Перейдите в настольный режим KDE Plasma на Wayland. Откройте Steam и закройте запущенные игры.",
                     "Switch to KDE Plasma Desktop Mode on Wayland. Open Steam and close any running games."),
-    "prepare_info": ("Мастер добавит в библиотеку служебный ярлык и создаст для него шаблон управления. Затем вы выберете этот шаблон в Steam.",
-                     "The manager will add a helper to your Steam Library and create its controller template. Next, you will select that template in Steam."),
+    "prepare_info": ("Мастер добавит в библиотеку служебный ярлык и создаст для него шаблон управления. Затем вы выберете этот шаблон в Steam. Для первой установки может понадобиться интернет.",
+                     "The manager will add a helper to your Steam Library and create its controller template. Next, select that template in Steam. The first installation may need an internet connection."),
     "prepare": ("Подготовить ярлык и шаблон", "Prepare shortcut and template"),
     "preparing": ("Готовим ярлык и шаблон…", "Preparing the shortcut and template…"),
     "template_title": ("Выберите шаблон в Steam", "Select the template in Steam"),
@@ -72,8 +80,8 @@ COPY = {
                    "In your Steam Library, open the Deck Plasma Keyboard Controls page and select the controller icon."),
     "template_2": ("Откройте текущую раскладку, затем «Шаблоны». Выберите «Deck Plasma Keyboard» и нажмите «Применить раскладку».",
                    "Open the current layout, then Templates. Select Deck Plasma Keyboard and choose Apply Layout."),
-    "template_3": ("Вернитесь в это окно и включите Plasma.", "Return to this window and enable Plasma."),
-    "verify": ("Проверить и включить Plasma", "Verify and enable Plasma"),
+    "template_3": ("Вернитесь в это окно и включите Decktil.", "Return to this window and enable Decktil."),
+    "verify": ("Проверить и включить Decktil", "Verify and enable Decktil"),
     "library": ("Открыть библиотеку", "Open Steam Library"),
     "offline_link": ("Шаблона нет в списке", "The template is missing"),
     "offline_title": ("Привязка при закрытом Steam", "Apply the template with Steam closed"),
@@ -82,8 +90,8 @@ COPY = {
     "bind": ("Привязать шаблон", "Apply template"),
     "binding": ("Привязываем шаблон…", "Applying the template…"),
     "launch_title": ("Снова откройте Steam", "Start Steam again"),
-    "launch_steps": ("Когда загрузится библиотека, вернитесь в мастер. Он проверит шаблон и включит клавиатуру Plasma.",
-                     "Once the Library has loaded, return here. The manager will verify the template and enable Plasma Keyboard."),
+    "launch_steps": ("Когда загрузится библиотека, вернитесь в мастер. Он проверит шаблон и включит Decktil.",
+                     "Once the Library has loaded, return here. The manager will verify the template and enable Decktil."),
     "launch": ("Открыть Steam", "Open Steam"),
     "shortcut_missing": ("Не видите ярлык? Полностью закройте Steam и запустите его снова. При необходимости добавьте в библиотеку стороннюю игру, выбрав файл:",
                          "Shortcut missing? Fully quit and reopen Steam. If needed, add a non-Steam game to your Library and choose this file:"),
@@ -104,12 +112,11 @@ COPY = {
                       "Delete all learned words and phrases in both languages? This cannot be undone."),
     "cancel": ("Отмена", "Cancel"),
     "clear": ("Очистить", "Clear"),
-    "switch_plasma": ("Включаем клавиатуру Plasma…", "Enabling Plasma Keyboard…"),
+    "switch_plasma": ("Настраиваем Decktil для трёх режимов…", "Setting up Decktil for all three modes…"),
     "switch_steam": ("Возвращаем клавиатуру Steam…", "Restoring Steam Keyboard…"),
-    "ready_plasma": ("В текстовом поле X открывает клавиатуру. Набирайте текст трекпадами. Повторное нажатие X стирает символ, удержание продолжает стирание. Steam + X скрывает панель с сохранением текста.",
-                     "In a text field, press X to open the keyboard and use the trackpads to type. Press X again to delete a character, or hold to keep deleting. Steam + X hides the panel and keeps your text."),
-    "ready_steam": ("Нажмите Steam + X в настольном режиме, чтобы открыть клавиатуру Steam.",
-                    "Press Steam + X in Desktop Mode to open the Steam keyboard."),
+    "ready_plasma": ("Steam + X открывает и скрывает Decktil. В текстовом поле рабочего стола также работает X. При наборе нажмите X, чтобы стереть символ, или удерживайте для повтора.",
+                     "Steam + X opens and hides Decktil. In a desktop text field, X also opens it. While typing, press X to delete one character or hold it to keep deleting."),
+    "ready_steam": ("Нажмите Steam + X, чтобы открыть штатную клавиатуру.", "Press Steam + X to open the built-in keyboard."),
     "retry": ("Повторить", "Try again"),
     "details": ("Технические сведения", "Technical details"),
     "unmanaged": ("Есть файлы другой установки. Сохраните её отдельно и освободите конфликтующие пути перед настройкой.",
@@ -176,6 +183,14 @@ def friendly_error(detail):
     return "failed"
 
 
+def session_keyboards(state):
+    providers = {"enabled": "plasma", "disabled": "steam", "missing": "steam",
+                 "foreign": "foreign", "mixed": "mixed"}
+    return {"desktop_mode": state["mode"],
+            "big_picture": providers[state["big_picture"]],
+            "gaming_mode": providers[state["gaming_mode"]]}
+
+
 def label(text, style=None):
     widget = Gtk.Label(label=text, xalign=0)
     widget.set_line_wrap(True)
@@ -201,7 +216,7 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         area = monitor.get_workarea() if monitor else None
         width = min(730, area.width - 40) if area and area.width >= 360 else 730
         self.wizard_height = min(615, area.height - 100) if area and area.height >= 370 else 615
-        self.set_default_size(width, min(470, self.wizard_height))
+        self.set_default_size(width, min(480, self.wizard_height))
         self.height_before_setup = None
         self.showing_setup = False
         self.set_icon_name("input-keyboard")
@@ -273,11 +288,12 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         top = Gtk.Box(spacing=8)
         icon = "object-select-symbolic" if selected else "input-keyboard-symbolic"
         top.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON), False, False, 0)
-        top.pack_start(label(self.t(mode), "deck-subheading"), True, True, 0)
+        title = self.t("reapply" if selected and mode == "plasma" else mode)
+        top.pack_start(label(title, "deck-subheading"), True, True, 0)
         content.add(top)
         content.add(label(self.t(mode + "_detail"), "deck-caption"))
         button.add(content)
-        name = self.t(mode) + (" · " + self.t("active") if selected else "")
+        name = title + (" · " + self.t("active") if selected else "")
         button.get_accessible().set_name(name)
         button.set_sensitive(enabled)
         button.connect("clicked", lambda *_: self.select(mode))
@@ -319,8 +335,6 @@ class KeyboardWindow(Gtk.ApplicationWindow):
     def select(self, mode):
         if mode == "plasma" and not self.state["setup_complete"]:
             self.navigate("template" if self.state["prepared"] else "prepare")
-        elif self.state["mode"] == mode:
-            self.navigate("choose")
         else:
             self.switch(mode)
 
@@ -360,7 +374,10 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             refresh.connect("clicked", lambda *_: self.refresh())
             heading.pack_end(refresh, False, False, 0)
         self.body.pack_start(heading, False, False, 0)
-        current = self.state["mode"] if self.state else None
+        keyboards = session_keyboards(self.state) if self.state else {}
+        current = keyboards.get("desktop_mode")
+        if any(provider != current for provider in keyboards.values()):
+            current = "mixed"
         supported = self.state is not None and self.state.get("supported_session", True)
         status = self.busy_text if self.pending else ("current_" + current if current else "no_status")
         if self.state and not self.pending:
@@ -378,11 +395,20 @@ class KeyboardWindow(Gtk.ApplicationWindow):
 
         modes = Gtk.Grid(column_spacing=10, column_homogeneous=True)
         for col, mode in enumerate(("plasma", "steam")):
-            enabled = bool(supported and not self.pending and self.state["installation"] != "unmanaged" and
-                           (current == mode or self.state["can_switch"] or
-                            (mode == "plasma" and not self.state["setup_complete"])))
+            enabled = supported and not self.pending and self.state["installation"] != "unmanaged"
+            if enabled and mode == "steam":
+                enabled = current != "steam" or self.state.get("recovery_pending", False)
+            if enabled and mode == "plasma":
+                enabled = self.state["can_switch"] or not self.state["setup_complete"]
             modes.attach(self.mode_button(mode, current == mode, enabled), col, 0, 1, 1)
         self.body.pack_start(modes, False, False, 0)
+
+        if self.page == "choose" and keyboards and supported:
+            summary = Gtk.Grid(row_spacing=4, column_spacing=16)
+            for row, (session, provider) in enumerate(keyboards.items()):
+                summary.attach(label(self.t(session), "deck-caption"), 0, row, 1, 1)
+                summary.attach(label(self.t("provider_" + provider)), 1, row, 1, 1)
+            self.body.pack_start(summary, False, False, 0)
 
         if self.error:
             err = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
@@ -515,6 +541,7 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             for key in ("prepared", "can_switch", "setup_complete"):
                 if not isinstance(state[key], bool):
                     raise ValueError("Missing setup status: " + key)
+            session_keyboards(state)  # Reject unknown or missing service states before rendering.
             self.state = state
             self.error = previous_error
         except (ValueError, KeyError, TypeError) as exc:
@@ -536,7 +563,12 @@ class KeyboardWindow(Gtk.ApplicationWindow):
 
 
 def main():
-    app = Gtk.Application(application_id="io.github.YaziAranea.SteamDeckPlasmaKeyboard")
+    app_id = "io.github.YaziAranea.SteamDeckPlasmaKeyboard"
+    version = SETUP.parent.name
+    if len(version) == 64 and all(char in "0123456789abcdef" for char in version):
+        # A manager still open from an older download must not receive this launch.
+        app_id += ".v" + version
+    app = Gtk.Application(application_id=app_id)
     def activate(application):
         window = application.get_active_window()
         if window is None:

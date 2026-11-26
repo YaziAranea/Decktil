@@ -35,7 +35,7 @@ ROOT = Path.home()/".steam/steam"
 TEMPLATE = ROOT/"controller_base/templates/deck_plasma_keyboard.vdf"
 ABSENT = "__deck_plasma_unset__"
 RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py", "personal.py",
-                 "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml",
+                 "popup.py", "suppress-steam-osk.js", "DeckSelector.qml", "DeckWordRow.qml", "DeckGameWordRow.qml",
                  "appearance.py", "DeckAppearance.qml", "DeckPalette.qml", "DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml",
                  "DeckPrediction.js", "DeckGrammar.js", "DeckLearning.js", "DeckPersonal.qml",
                  "words/ru.txt.gz", "words/en.txt.gz", "words/ru-morph.json.gz",
@@ -436,11 +436,23 @@ def effective_mode(actual):
     return "mixed"
 
 
+def fullscreen_installer():
+    path = PACKAGE / "experimental/gaming/install-pilot.py"
+    spec = importlib.util.spec_from_file_location("decktil_fullscreen_setup", path)
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    return installer
+
+
+def transaction_file():
+    return STATE_DIR / "all-modes.json"
+
+
 def status(state):
     kind, prepared, appid = installation(state)
     session = desktop_session()
     mode = "steam" if kind == "missing" else "mixed"
-    recovery = "pending" in load_mode()
+    recovery = "pending" in load_mode() or transaction_file().is_file()
     first_setup = kind == "managed" and not state.get("enabled", False)
     if first_setup and not recovery:
         mode = "steam"
@@ -455,7 +467,7 @@ def status(state):
             "setup_complete": kind == "manual" or (kind == "managed" and not first_setup),
             "shortcut_appid": appid, "can_switch": prepared and session,
             "supported_session": session, "recovery_pending": recovery,
-            "personal_enabled": personal.enabled()}
+            "personal_enabled": personal.enabled(), **fullscreen_installer().status(UNIT.parent)}
 
 
 def configure_personal(selection):
@@ -585,6 +597,129 @@ def switch_mode(state, choice):
         raise
 
 
+def runtime_changes(state):
+    changes = []
+    for name in RUNTIME_FILES:
+        target = APP / name
+        new_data = (PACKAGE / "src" / name).read_bytes()
+        old = state["files"].get(str(target))
+        if target.is_symlink() or (target.exists() and (not old or not target.is_file())):
+            raise RuntimeError(f"An unmanaged or modified file exists: {target}")
+        if target.is_file():
+            old_data = target.read_bytes()
+            if old_data == new_data:
+                continue
+            if digest(old_data) != old:
+                raise RuntimeError(f"An unmanaged or modified file exists: {target}")
+        changes.append(name)
+    return changes
+
+
+def restore_all(fullscreen, pending):
+    # Stop new fullscreen workers before restoring the desktop service they depend on.
+    if pending["fullscreen"] and pending.get("fullscreen_touched"):
+        fullscreen.disable(UNIT.parent)
+    if "backup" in pending:
+        backup = STATE_DIR / pending["backup"]
+        for name in pending.get("backed_up", pending["changes"]):
+            previous = backup / name
+            if previous.is_file():
+                save(APP / name, previous.read_bytes(), previous.stat().st_mode & 0o777)
+            else:
+                (APP / name).unlink(missing_ok=True)
+    if pending.get("desktop") is not None:
+        restore_snapshot(pending["desktop"])
+        if pending.get("changes") and pending["desktop"]["active"]:
+            cmd("systemctl", "--user", "restart", UNIT_NAME)
+    if pending["fullscreen"] and pending.get("fullscreen_touched"):
+        fullscreen.restore(UNIT.parent, pending["fullscreen"])
+    if pending["manifest"] is not None:
+        record(pending["manifest"])
+    store_mode(pending["mode"])
+    finish_transaction(pending)
+
+
+def finish_transaction(pending):
+    transaction_file().unlink(missing_ok=True)
+    if "backup" in pending:
+        shutil.rmtree(STATE_DIR / pending["backup"], ignore_errors=True)
+
+
+def switch_all(state, choice, *, uninstall=False):
+    if not desktop_session():
+        raise RuntimeError("Use the keyboard switcher in KDE Plasma Desktop Mode on Wayland")
+    fullscreen = fullscreen_installer()
+    base = fullscreen.base_directory()
+    base.mkdir(parents=True, exist_ok=True)
+    with (base / ".install.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if transaction_file().exists():
+            restore_all(fullscreen, json.loads(transaction_file().read_text()))
+            state = load_manifest()
+        resume_interrupted(load_mode())
+        kind, prepared, _ = installation(state)
+        has_desktop = kind in ("managed", "manual") and prepared
+        if not has_desktop and choice == "plasma":
+            raise RuntimeError("The keyboard adapter is missing or its service belongs to another installation")
+        before = fullscreen.capture(UNIT.parent)
+        if not has_desktop and all(flags is None for flags in before["units"].values()):
+            if uninstall:
+                fullscreen.uninstall(UNIT.parent)
+            return
+        changes = runtime_changes(state) if choice == "plasma" and kind == "managed" else []
+        # Verify all host dependencies and the immutable snapshot before switching anything.
+        release = fullscreen.prepare_release() if choice == "plasma" else None
+        pending = {"desktop": snapshot() if has_desktop else None, "fullscreen": before,
+                   "mode": load_mode(), "manifest": load_manifest() if MANIFEST.exists() else None,
+                   "changes": changes, "fullscreen_touched": False}
+        backed_up = list(changes)
+        if choice == "plasma" and kind == "managed" and not state.get("enabled"):
+            # enable() creates or refreshes the helper AppID before checking Steam.
+            # Roll it back together with its old manifest to keep first setup retryable.
+            shortcut = APP / "steam-shortcut.json"
+            if shortcut.is_symlink() or (shortcut.exists() and (not shortcut.is_file()
+                    or digest(shortcut.read_bytes()) != state["files"].get(str(shortcut)))):
+                raise RuntimeError(f"An unmanaged or modified file exists: {shortcut}")
+            backed_up.append("steam-shortcut.json")
+        if backed_up:
+            backup = Path(tempfile.mkdtemp(dir=STATE_DIR, prefix="runtime-backup-"))
+            pending.update(backup=backup.name, backed_up=backed_up)
+            for name in backed_up:
+                if (APP / name).is_file():
+                    (backup / name).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(APP / name, backup / name)
+        save(transaction_file(), json.dumps(pending).encode())
+        try:
+            for name in changes:
+                managed_file(state, APP / name, (PACKAGE / "src" / name).read_bytes(),
+                             0o755 if name == "keyboard.py" else 0o644)
+            pending["fullscreen_touched"] = True
+            save(transaction_file(), json.dumps(pending).encode())
+            if choice == "plasma":
+                fullscreen.install_files(UNIT.parent, release)
+            else:
+                fullscreen.disable(UNIT.parent)
+            if has_desktop:
+                switch_mode(state, choice)
+            if choice == "plasma":
+                if changes and pending["desktop"]["active"]:
+                    # Reload the updated desktop bridge and let KWin relaunch its input method.
+                    set_method(None)
+                    set_method(str(ENTRY))
+                    cmd("systemctl", "--user", "restart", UNIT_NAME)
+                    check = snapshot()
+                    if effective_mode(check) != "plasma":
+                        raise RuntimeError("KWin did not reload the updated keyboard")
+                    verify_settings(check, available=True)
+                fullscreen.activate()
+            finish_transaction(pending)
+        except Exception:
+            restore_all(fullscreen, pending)
+            raise
+        if uninstall:
+            fullscreen.uninstall(UNIT.parent)
+
+
 def remove(state):
     if not MANIFEST.exists():
         print("No managed installation.")
@@ -640,9 +775,12 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         state=load_manifest()
         if args.action in ("mode", "disable"):
-            switch_mode(state, args.selection or "steam")
-        elif args.action == "enable" and mode_file().exists():
-            switch_mode(state, "plasma")
+            switch_all(state, args.selection or "steam")
+        elif args.action == "enable":
+            switch_all(state, "plasma")
+        elif args.action == "remove":
+            switch_all(state, "steam", uninstall=True)
+            remove(load_manifest())
         else:
             {"prepare":prepare,"bind":bind,"enable":enable,"remove":remove}[args.action](state)
 

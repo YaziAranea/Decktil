@@ -129,6 +129,8 @@ def _route(url, verified_search):
         return False
     if path.startswith("/routes/"):
         path = path[len("/routes"):]
+    if verified_search and re.fullmatch(r"/search/tab/[A-Za-z0-9_-]{1,48}", path):
+        return True
     if path in ("/library", "/library/home", "/search") or re.fullmatch(r"/library/tab/[0-9]+", path):
         return True
     return not parts.fragment and parts.path in entrypoints and verified_search
@@ -232,7 +234,7 @@ class _Tree:
         return self.call(ref, COLLECTION, "GetMatches", "(aiia{ss}iaiiasib)uib",
                          (rule, 1, limit, True))
 
-    def editor(self, xid, pid, known):
+    def editor(self, xid, pid, known, *, expected_entry=None):
         self.reason = "steam-accessibility-owner"
         apps = self.call((REGISTRY, ROOT_PATH), ACC, "GetChildren")
         candidates = []
@@ -250,11 +252,16 @@ class _Tree:
         if len(focused) != 1 or focused[0][0] != app[0]:
             return None
         entry, = focused
+        if expected_entry is not None:
+            if expected_entry[0] != app[0]:
+                return None
+            entry = expected_entry
         self.reason = "editor-type-or-state"
         role = self.call(entry, ACC, "GetRole")
         state = _states(self.call(entry, ACC, "GetState"))
-        if (role not in (ROLE.ENTRY, ROLE.TEXT) or not _has(state, STATE.FOCUSED, STATE.EDITABLE,
-                                                            STATE.VISIBLE, STATE.SHOWING, STATE.SENSITIVE)
+        if (role not in (ROLE.ENTRY, ROLE.TEXT) or not _has(state, STATE.EDITABLE, STATE.VISIBLE,
+                                                            STATE.SHOWING, STATE.SENSITIVE)
+                or (expected_entry is None and not _has(state, STATE.FOCUSED))
                 or state & ((1 << int(STATE.READ_ONLY)) | (1 << int(STATE.DEFUNCT)))):
             return None
         attrs = self.call(entry, ACC, "GetAttributes")

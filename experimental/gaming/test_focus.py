@@ -22,6 +22,13 @@ class FocusChecks(unittest.TestCase):
             self.assertFalse(focus._route(url, False))
             self.assertTrue(focus._route(url, True))
 
+    def test_result_tabs_require_a_recognized_search_and_a_local_route(self):
+        route = "https://steamloopback.host/routes/search/tab/All"
+        self.assertTrue(focus._route(route, True))
+        self.assertFalse(focus._route(route, False))
+        for suffix in ("/game", "%2fpassword", "?redirect=/store"):
+            self.assertFalse(focus._route(route + suffix, True))
+
     def test_gamescope_cardinal_display_name_is_not_server_number(self):
         self.assertTrue(focus._matches_display("12346, 0, 32", ":0"))
         self.assertTrue(focus._matches_display("12346, 0, 32", ":0.0"))

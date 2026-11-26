@@ -25,7 +25,9 @@ elif args == ['bind']:
     if not state_file.with_name('steam-closed').exists():
         sys.exit('Choose Steam > Exit and allow Steam to finish before offline binding')
 elif len(args) == 2 and args[0] == 'mode':
-    state.update(mode=args[1], setup_complete=True)
+    service = "enabled" if args[1] == "plasma" else "disabled"
+    state.update(mode=args[1], setup_complete=True, big_picture=service, gaming_mode=service,
+                 switches=state.get("switches", 0) + 1)
 elif len(args) == 2 and args[0] == 'personal':
     if args[1] == 'clear':
         state['cleared'] = True
@@ -78,7 +80,18 @@ def private_session(root):
                     return
         raise AssertionError(title)
 
+    def has_text(text):
+        return any(isinstance(child, Gtk.Label) and child.get_text() == text for child in children(window))
+
+    def check_summary(mode, provider):
+        assert has_text(window.t("current_" + mode))
+        keyboards = manager.session_keyboards(window.state)
+        assert set(keyboards.values()) == {provider}
+        for key in keyboards:
+            assert has_text(window.t(key)) and has_text(window.t("provider_" + provider))
+
     finish()
+    check_summary("steam", "steam")
     assert window.lang == 0 and window.state["installation"] == "missing"
     click("plasma")
     assert window.page == "prepare"
@@ -98,9 +111,14 @@ def private_session(root):
     click("verify")
     finish()
     assert window.state["mode"] == "plasma" and window.page == "choose"
+    check_summary("plasma", "plasma")
+    click("reapply")
+    finish()
+    assert window.state["switches"] == 2
+    check_summary("plasma", "plasma")
     click("steam")
     finish()
-    assert window.state["mode"] == "steam"
+    check_summary("steam", "steam")
     click("plasma")
     finish()
     assert window.state["mode"] == "plasma"
@@ -156,11 +174,21 @@ def private_session(root):
     assert appearance.load()["preset"] == "default"
     fixture = root / "state.json"
     state = json.loads(fixture.read_text())
-    state["installation"] = "manual"
+    state.update(installation="manual", big_picture="missing", gaming_mode="disabled")
     fixture.write_text(json.dumps(state))
     click("refresh")
     finish()
-    assert window.state["installation"] == "manual"
+    assert window.state["installation"] == "manual" and has_text(window.t("current_mixed"))
+    click("plasma")
+    finish()
+    check_summary("plasma", "plasma")
+    # A standalone gaming pilot still needs a working Restore button when KDE is already stock.
+    state.update(installation="missing", prepared=False, setup_complete=False, can_switch=False,
+                 mode="steam", big_picture="missing", gaming_mode="enabled")
+    fixture.write_text(json.dumps(state))
+    click("refresh")
+    finish()
+    assert has_text(window.t("current_mixed"))
     click("steam")
     finish()
     assert window.state["mode"] == "steam" and window.page == "choose"
@@ -178,7 +206,7 @@ class NativeManager(unittest.TestCase):
             (root / "setup.py").write_text(BACKEND)
             (root / "state.json").write_text(json.dumps(dict(
                 installation="missing", mode="steam", prepared=False,
-                can_switch=False, setup_complete=False,
+                can_switch=False, setup_complete=False, big_picture="missing", gaming_mode="missing",
             )))
             (root / "bus.conf").write_text(BUS)
             env = dict(os.environ, HOME=str(root / "home"), XDG_RUNTIME_DIR=str(root / "runtime"),

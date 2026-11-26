@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import focus
 from accessible_inline import AccessibleInlineState
+from search_space import recover
 
 
 class AccessibleInlineTests(unittest.TestCase):
@@ -54,3 +55,47 @@ class AccessibleInlineTests(unittest.TestCase):
         self.tree.inline.side_effect = TimeoutError
         self.assertIsNone(self.reader.sample(12))
         self.assertIsNone(self.reader.tree)
+
+    def test_space_restores_only_the_adjacent_tab_of_the_same_search(self):
+        field = 12, ('atspi', 12, 40, ':1.2', '/doc', '/field')
+        original = (':1.2', '/field')
+        tab = (':1.2', '/tab')
+        tabs = (':1.2', '/tabs')
+        role = focus.ROLE.PAGE_TAB
+        top = 40
+
+        def call(ref, iface, method, *args):
+            if method == 'GetAttributeValue':
+                return 'https://steamloopback.host/routes/search/tab/All'
+            if method == 'GetRole':
+                return role if ref == tab else focus.ROLE.PAGE_TAB_LIST
+            if method == 'Get':
+                return tabs
+            if method == 'GetExtents':
+                return (0, 0, 400, 40) if ref == original else (0, top, 400, 42)
+            if method == 'GrabFocus':
+                return True
+            if method == 'GetAttributes':
+                return {}
+            self.fail(method)
+
+        self.tree.call.side_effect = call
+        self.tree.matches.side_effect = lambda doc, **opts: [tab] if opts.get('focused') else []
+        self.assertEqual(recover(field), 'restored')
+        self.tree.editor.assert_any_call(12, 40, self.skin, expected_entry=original)
+        role = focus.ROLE.PUSH_BUTTON
+        self.assertEqual(recover(field, held=True), 'blocked')
+        role = focus.ROLE.PAGE_TAB
+        top = 430
+        self.assertEqual(recover(field), 'blocked')
+        top = 40
+        self.tree.editor.return_value = focus.Editor(12, 40, ':1.2', '/otherdoc', '/field', True)
+        self.assertEqual(recover(field), 'blocked')
+        self.assertEqual(sum(args[0][2] == 'GrabFocus' for args in self.tree.call.call_args_list), 1)
+
+    def test_observed_navigation_pauses_input_even_without_cef(self):
+        self.tree.editor.return_value = None
+        self.tree.reason = 'editor-type-or-state'
+        self.assertEqual(self.reader.sample(12), ('other', None))
+        self.tree.reason = 'steam-accessibility-owner'
+        self.assertIsNone(self.reader.sample(12))

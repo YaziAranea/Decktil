@@ -15,6 +15,13 @@ import setup
 SOURCE = Path(__file__).resolve().parent
 LAUNCHER = "Decktil.desktop"
 MENU_ID = "io.github.YaziAranea.SteamDeckPlasmaKeyboard.desktop"
+GAMING_FILES = (
+    "install-pilot.py", "decktil-bigpicture.service", "decktil-gaming-pilot.service",
+    "accessible_inline.py", "auto_keyboard.py", "bigpicture_focus.py", "controller.py",
+    "evdev_output.py", "focus.py", "inline_state.py", "kde_layout.py", "manual.py",
+    "output.py", "overlay.py", "panel.py", "panel.qml", "search_space.py",
+    "session.py", "typed_context.py",
+)
 
 
 def install_manager(source, data_dir):
@@ -27,7 +34,8 @@ def install_manager(source, data_dir):
                 "X-Deck-Plasma-Manager=true" not in menu.read_text().splitlines()):
             raise RuntimeError(f"An existing menu entry belongs to another application: {menu}")
         files = ["manager.py", "appearance_page.py", "setup.py", "steam_shortcuts.py", "LICENSE", "INSTALL.md",
-                 *("src/" + name for name in setup.RUNTIME_FILES)]
+                 *("src/" + name for name in setup.RUNTIME_FILES),
+                 *("experimental/gaming/" + name for name in GAMING_FILES)]
         payload = {name: (source / name).read_bytes() for name in files}
         fingerprint = hashlib.sha256()
         for name, content in sorted(payload.items()):

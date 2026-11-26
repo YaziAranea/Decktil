@@ -8,7 +8,13 @@ def search_identity(field):
     if not isinstance(field, tuple) or len(field) != 2:
         return False
     owner, key = field
-    if type(owner) is not int or not isinstance(key, tuple) or len(key) != 4:
+    if type(owner) is not int or not isinstance(key, tuple):
+        return False
+    if len(key) == 6 and key[0] == 'atspi':
+        return (type(key[1]) is int and key[1] == owner and type(key[2]) is int and key[2] > 0
+                and isinstance(key[3], str) and key[3].startswith(':')
+                and all(isinstance(path, str) and path.startswith('/') for path in key[4:]))
+    if len(key) != 4:
         return False
     identifier, epoch, kind, path = key
     return (kind == "search" and isinstance(identifier, str) and isinstance(path, tuple)
@@ -66,6 +72,9 @@ _FOCUS = r"""(() => {
 def recover(field, *, held=False):
     if not search_identity(field):
         return None
+    if field[1][0] == 'atspi' and len(field[1]) == 6:
+        from accessible_inline import recover_space
+        return recover_space(field[1], held=held)
     xid, (identifier, epoch, _, path) = field
 
     def operation(skin):

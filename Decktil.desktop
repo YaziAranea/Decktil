@@ -4,10 +4,10 @@ Type=Application
 Name=Decktil
 GenericName=Steam Deck keyboard manager
 GenericName[ru]=Менеджер клавиатуры Steam Deck
-Keywords=Steam Deck;Plasma;keyboard;trackpad;
-Keywords[ru]=Steam Deck;Plasma;клавиатура;трекпад;Дектиль;
-Comment=Choose between the Steam keyboard and the Plasma Keyboard adapter
-Comment[ru]=Выбор между клавиатурой Steam и адаптером Plasma Keyboard
+Keywords=Steam Deck;Plasma;Big Picture;Gaming Mode;keyboard;trackpad;
+Keywords[ru]=Steam Deck;Plasma;Big Picture;игровой режим;клавиатура;трекпад;Дектиль;
+Comment=Choose the keyboard for KDE Desktop, Big Picture and SteamOS Gaming Mode
+Comment[ru]=Выбор клавиатуры для рабочего стола KDE, Big Picture и игрового режима SteamOS
 Exec=/usr/bin/python3 -c "import os,sys; from pathlib import Path; from urllib.parse import unquote,urlsplit; k=sys.argv[1]; p=Path(unquote(urlsplit(k).path) if k.startswith('file:') else k); os.execv(sys.executable,[sys.executable,str(p.with_name('start.py'))])" %k
 Icon=input-keyboard-virtual
 Categories=Settings;HardwareSettings;
