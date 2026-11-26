@@ -127,7 +127,7 @@ def private_session(root):
         return next(widget for widget in children(window) if isinstance(widget, AppearancePage))
 
     click("appearance")
-    page().theme.set_active_id("lagoon")
+    page().theme_buttons["lagoon"].clicked()
     assert appearance.load()["preset"] == "default"
     page().apply.clicked()
     assert appearance.load()["preset"] == "lagoon"
@@ -135,17 +135,23 @@ def private_session(root):
     picker.set_rgba(rgba("#7D31B7"))
     picker.emit("color-set")
     page().direction.set_active_id("horizontal")
-    assert page().theme.get_active_id() == "custom"
+    assert page().theme_buttons["custom"].get_active()
     window.language.set_active(0)
     assert page().draft["keyStart"].lower() == "#7d31b7"
     page().apply.clicked()
-    page().theme.set_active_id("default")
+    page().theme_buttons["default"].clicked()
     page().apply.clicked()
     click("back")
     click("appearance")
-    assert page().theme.get_active_id() == "default"
-    page().theme.set_active_id("custom")
+    assert page().theme_buttons["default"].get_active()
+    page().theme_buttons["custom"].clicked()
     assert page().draft["keyStart"].lower() == "#7d31b7" and page().draft["direction"] == "horizontal"
+    assert page().details.get_expanded()
+    page().contrast.clicked()
+    assert page().draft["text"] == appearance.readable_ink(page().draft)
+    page().theme_buttons["porcelain"].clicked()
+    assert not page().details.get_expanded()
+    assert page().draft["text"] == appearance.PRESETS["porcelain"]["text"]
     click("back")
     assert appearance.load()["preset"] == "default"
     fixture = root / "state.json"

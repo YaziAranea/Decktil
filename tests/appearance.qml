@@ -27,7 +27,12 @@ Window {
         repeat: true
         onTriggered: {
             if (!skin || !skin.palette) return
-            if (!initialized && skin.palette.preset === "lagoon") {
+            if (!initialized && skin.palette.preset === "porcelain") {
+                if (String(skin.textColor) !== "#252b36" || String(skin.accentColor) !== "#2857ba"
+                        || String(skin.accentTextColor) !== "#ffffff" || skin.palette.horizontal) {
+                    Qt.exit(2)
+                    return
+                }
                 initialized = true
                 firstPalette = skin.palette
                 page.active = false

@@ -22,10 +22,35 @@ def _palette(background_start, background_end, key_start, key_end, text, accent,
 # The default swatch represents Breeze Dark in previews; the keyboard follows the actual KDE theme.
 PRESETS = {
     "default": _palette("#31363B", "#31363B", "#454B50", "#454B50", "#FCFCFC", "#3DAEE9", "vertical"),
+    "porcelain": _palette("#EBE5DB", "#CDD3DC", "#FFFCF6", "#F2F0EF", "#252B36", "#2857BA", "vertical"),
     "midnight": _palette("#121B31", "#2D2847", "#39435B", "#2F304B", "#F5F4FF", "#AFA6FF", "vertical"),
     "lagoon": _palette("#112F38", "#164E51", "#28585D", "#23434D", "#F2FFFA", "#78E7C0", "horizontal"),
     "ember": _palette("#321D27", "#513025", "#66424A", "#50313A", "#FFF3E8", "#FFB270", "horizontal"),
 }
+
+
+def readable_ink(palette):
+    """Choose black or white by its worst contrast across the key and panel gradients."""
+    def channels(key):
+        value = palette[key]
+        return tuple(int(value[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+    def linear(value):
+        return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+    luminances = []
+    for surface in ("key", "background"):
+        start, end = channels(surface + "Start"), channels(surface + "End")
+        # Each RGB channel interpolates before conversion to relative luminance.
+        # Opposing channel changes can make the middle darker than either end.
+        for step in range(65):
+            position = step / 64
+            rgb = (linear(a + (b - a) * position) for a, b in zip(start, end))
+            red, green, blue = rgb
+            luminances.append(0.2126 * red + 0.7152 * green + 0.0722 * blue)
+    black_contrast = (min(luminances) + 0.05) / 0.05
+    white_contrast = 1.05 / (max(luminances) + 0.05)
+    return "#000000" if black_contrast >= white_contrast else "#FFFFFF"
 
 
 def _path():

@@ -50,9 +50,22 @@ class AppearanceTests(unittest.TestCase):
         appearance._path().write_text("[invalid", encoding="utf-8")
         self.assertEqual(appearance.load()["preset"], "default")
 
+    def test_readable_ink_for_light_and_dark_presets(self):
+        self.assertEqual(appearance.readable_ink(appearance.PRESETS["porcelain"]), "#000000")
+        self.assertEqual(appearance.readable_ink(appearance.PRESETS["midnight"]), "#FFFFFF")
+
+    def test_readable_ink_checks_both_surfaces_and_gradient_interiors(self):
+        # For red and green alone, black wins. The darker middle needs white.
+        values = dict(CUSTOM, keyStart="#FF0000", keyEnd="#FF0000",
+                      backgroundStart="#009900", backgroundEnd="#009900")
+        self.assertEqual(appearance.readable_ink(values), "#000000")
+        for surface, end in (("key", "#009900"), ("background", "#FF0000")):
+            with self.subTest(surface=surface):
+                self.assertEqual(appearance.readable_ink({**values, surface + "End": end}), "#FFFFFF")
+
     @unittest.skipUnless(Path(QML).is_file(), "requires the Qt 6 QML runner")
     def test_open_qml_panel_observes_save_and_keeps_text_selection(self):
-        appearance.save({"preset": "lagoon"})
+        appearance.save({"preset": "porcelain"})
         layouts = self.folder / "layouts"
         page = layouts / "fallback"
         shared = layouts / "DecktilStyle"

@@ -92,6 +92,9 @@ COPY = {
     "refresh": ("Проверить снова", "Check again"),
     "personal": ("Личный словарь", "Personal dictionary"),
     "appearance": ("Оформление", "Appearance"),
+    "appearance_detail": ("Темы и цвета клавиш", "Themes and key colors"),
+    "learning_on": ("Обучение включено", "Learning on"),
+    "learning_off": ("Обучение выключено", "Learning off"),
     "learn": ("Запоминать мои слова и выражения", "Learn my words and phrases"),
     "learn_details": ("Частые слова и сочетания из двух или трёх слов поднимаются в подсказках. Словарь хранится на этом устройстве.",
                       "Words and two- or three-word phrases you use often move up in suggestions. Your dictionary stays on this device."),
@@ -141,8 +144,11 @@ window.deck-manager { background-color: @theme_bg_color; }
 .deck-subheading { font-size: 18px; font-weight: bold; }
 .deck-caption { opacity: .78; }
 .deck-status { font-size: 15px; }
-button.deck-mode { padding: 13px 15px; min-height: 62px; border-radius: 8px; }
-button.deck-mode.deck-current { border: 2px solid @theme_selected_bg_color; }
+button.deck-mode { padding: 13px 15px; min-height: 62px; border-radius: 13px; }
+button.deck-mode.deck-current { border-color: @theme_selected_bg_color; box-shadow: inset 0 0 0 1px @theme_selected_bg_color; }
+.deck-settings { border: 1px solid alpha(@theme_fg_color,.21); border-radius: 12px; }
+button.deck-setting { padding: 4px 14px; min-height: 38px; border-radius: 10px; }
+.deck-setting-title { font-weight: bold; }
 .deck-card { padding: 16px; border: 1px solid alpha(@theme_fg_color,.22); border-radius: 8px; }
 .deck-action { min-height: 38px; padding-left: 12px; padding-right: 12px; }
 .deck-link { min-height: 34px; }
@@ -194,8 +200,8 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         area = monitor.get_workarea() if monitor else None
         width = min(730, area.width - 40) if area and area.width >= 360 else 730
-        self.wizard_height = min(565, area.height - 110) if area and area.height >= 370 else 565
-        self.set_default_size(width, min(400, self.wizard_height))
+        self.wizard_height = min(615, area.height - 100) if area and area.height >= 370 else 615
+        self.set_default_size(width, min(470, self.wizard_height))
         self.height_before_setup = None
         self.showing_setup = False
         self.set_icon_name("input-keyboard")
@@ -284,6 +290,21 @@ class KeyboardWindow(Gtk.ApplicationWindow):
         self.body.pack_start(box, False, False, 0)
         return box
 
+    def settings_row(self, key, detail, icon):
+        row = Gtk.Button()
+        row.set_relief(Gtk.ReliefStyle.NONE)
+        row.get_style_context().add_class("deck-setting")
+        content = Gtk.Box(spacing=12)
+        content.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON), False, False, 0)
+        content.pack_start(label(self.t(key), "deck-setting-title"), True, True, 0)
+        content.pack_start(label(self.t(detail), "deck-caption"), False, False, 0)
+        content.pack_end(Gtk.Image.new_from_icon_name("go-next-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        row.add(content)
+        row.get_accessible().set_name(self.t(key))
+        row.get_accessible().set_description(self.t(detail))
+        row.connect("clicked", lambda *_: self.navigate(key))
+        return row
+
     def actions(self, box, *items):
         row = Gtk.FlowBox()
         row.set_halign(Gtk.Align.FILL)
@@ -329,7 +350,16 @@ class KeyboardWindow(Gtk.ApplicationWindow):
                                          lambda: self.navigate("choose")))
             self.body.show_all()
             return
-        self.body.pack_start(label(self.t("heading"), "deck-heading"), False, False, 0)
+        heading = Gtk.Box(spacing=8)
+        heading.pack_start(label(self.t("heading"), "deck-heading"), True, True, 0)
+        if not self.pending and (self.page == "choose" or not self.state):
+            refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
+            refresh.set_relief(Gtk.ReliefStyle.NONE)
+            refresh.set_tooltip_text(self.t("refresh"))
+            refresh.get_accessible().set_name(self.t("refresh"))
+            refresh.connect("clicked", lambda *_: self.refresh())
+            heading.pack_end(refresh, False, False, 0)
+        self.body.pack_start(heading, False, False, 0)
         current = self.state["mode"] if self.state else None
         supported = self.state is not None and self.state.get("supported_session", True)
         status = self.busy_text if self.pending else ("current_" + current if current else "no_status")
@@ -374,13 +404,14 @@ class KeyboardWindow(Gtk.ApplicationWindow):
             self.body.add(label(self.t("unmanaged")))
         elif supported and current in ("steam", "plasma"):
             self.body.add(label(self.t("ready_" + current), "deck-caption"))
-        if not self.pending and (not self.state or self.page == "choose"):
-            row = Gtk.Box()
-            if self.state:
-                row.pack_start(self.button("appearance", lambda: self.navigate("appearance"), flat=True), False, False, 0)
-                row.pack_start(self.button("personal", lambda: self.navigate("personal"), flat=True), False, False, 0)
-            row.pack_end(self.button("refresh", self.refresh, flat=True), False, False, 0)
-            self.body.pack_end(row, False, False, 0)
+        if not self.pending and self.state and self.page == "choose":
+            settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            settings.get_style_context().add_class("deck-settings")
+            settings.add(self.settings_row("appearance", "appearance_detail", "applications-graphics-symbolic"))
+            settings.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            learning = "learning_on" if self.state.get("personal_enabled") else "learning_off"
+            settings.add(self.settings_row("personal", learning, "accessories-dictionary-symbolic"))
+            self.body.pack_start(settings, False, False, 0)
         self.body.show_all()
 
     def personal_page(self):
