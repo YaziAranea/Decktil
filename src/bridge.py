@@ -29,7 +29,7 @@ VK = "org.kde.kwin.VirtualKeyboard"
 log = logging.getLogger("deck-plasma-keyboard")
 PRESS_SAMPLE_SECONDS = .008
 OSK_INPUT_SECONDS = 1.2
-ERASE_BUTTON = 16  # Frame bit reserved for physical B.
+ERASE_BUTTON = 16  # Frame bit reserved for physical X on an open panel.
 
 
 @dataclass
@@ -102,9 +102,9 @@ class Bridge(dbus.service.Object):
         self.last_frame = None
         self.last_send = 0.0
         self.last_down = None
-        self.physical_b = None
         self.erase_serial = None
         self.erase_release_deadline = 0.0
+        self.desktop_erase_until = 0.0
         self.held_triggers = 0
         self.preloaded = 0
         self.feedback = TrackpadFeedback()
@@ -170,10 +170,12 @@ class Bridge(dbus.service.Object):
     @dbus.service.method(INTERFACE, in_signature="i", out_signature="")
     def CloseOnEmpty(self, serial):
         # The layout sees the editor's surrounding/selected/preedit text. The
-        # bridge owns KWin activation and can authenticate the current B edge.
-        if (self.erase_serial != int(serial) or not self.visible or not self.can_route()
-                or self.locked or self.in_game or time.monotonic() > self.erase_release_deadline
-                or not self.recovery_editor()):
+        # bridge owns KWin activation and can authenticate the current X edge.
+        now = time.monotonic()
+        if (self.erase_serial != int(serial) or not self.visible or self.locked or self.in_game
+                or now > self.erase_release_deadline or not self.recovery_editor()):
+            return
+        if not self.can_route() and not (now < self.desktop_erase_until and self.acquiring_from_desktop()):
             return
         self.erase_serial = None
         self.chord._request(False)
@@ -209,10 +211,11 @@ class Bridge(dbus.service.Object):
         self.click_timers.add(timer)
 
     def cancel_erase(self):
-        # A released B may still be checking whether the editor is empty.
+        # A released X may still be checking whether the editor is empty.
         if self.erase_serial is not None or self.last_down:
             self.CancelRepeat()
         self.erase_serial = None
+        self.desktop_erase_until = 0.0
 
     def stop_input(self):
         self.cancel_erase()
@@ -230,6 +233,20 @@ class Bridge(dbus.service.Object):
 
     def can_route(self):
         return self.ready or time.monotonic() < self.route_until
+
+    def acquiring_from_desktop(self):
+        # KWin can show the panel before the first profile activation finishes.
+        # A fresh X in this interval still belongs to the verified desktop
+        # keyboard binding or to the very helper being acquired.
+        if self.job is None or not self.steam_pid:
+            return False
+        try:
+            index, _ = mapping.desktop_source()
+            return (self.steam_pid == mapping.steam_pid() and not mapping.running_game()
+                    and (mapping.active_app(index) == mapping.DESKTOP or
+                         mapping.valid({"index": index, "pid": self.steam_pid})))
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def recovery_editor(self):
         state = self.chord._state()
@@ -265,35 +282,41 @@ class Bridge(dbus.service.Object):
                     raise OSError("Deck disconnected")
                 if len(report) != 64 or report[:4] != b"\x01\x00\x09\x40" or self.locked or self.in_game:
                     continue
-                b = bool(report[8] & 0x20)
-                previous_b, self.physical_b = self.physical_b, b
-                if previous_b and not b:
-                    # The QML reply can arrive just after a quick release.
-                    self.erase_release_deadline = time.monotonic() + .25
-                self.chord.update(bool(report[9] & 32), bool(report[8] & 64))
+                x_down = bool(report[8] & 0x40)
+                guide_down = bool(report[9] & 0x20)
+                erase_edge = self.chord.update(guide_down, x_down)
+                held_erase = self.erase_serial is not None and self.erase_release_deadline == float("inf")
+                if held_erase and guide_down:
+                    self.cancel_erase()
+                elif held_erase and not x_down:
+                    # Codex can publish its empty-paragraph state after key-up.
+                    self.erase_release_deadline = time.monotonic() + .4
                 closing = (self.chord.stage or self.chord.armed) and not self.chord.want_open
-                if not self.can_route() or not self.visible or closing:
+                route_pads = self.can_route()
+                if erase_edge:
+                    self.erase_serial = None  # Supersede any delayed reply from the previous tap.
+                    self.desktop_erase_until = 0.0
+                    if not route_pads and self.visible and not closing and self.acquiring_from_desktop():
+                        self.desktop_erase_until = time.monotonic() + OSK_INPUT_SECONDS
+                if not self.visible or closing or (not route_pads and time.monotonic() >= self.desktop_erase_until):
                     self.cancel_erase()
                     self.last_down = None
                     continue
-                touches = (report[10] >> 3) & 3
-                clicks = (report[10] >> 1) & 3
+                touches = ((report[10] >> 3) & 3) if route_pads else 0
+                clicks = ((report[10] >> 1) & 3) if route_pads else 0
                 previous = self.last_down
-                self.held_triggers = trigger_mask(report, self.held_triggers if previous is not None else 0)
+                prior_triggers = self.held_triggers if previous is not None else 0
+                self.held_triggers = trigger_mask(report, prior_triggers) if route_pads else 0
                 # A trigger and a pad click share one press cycle per side;
                 # only the actual trigger state controls its analog hysteresis.
                 down = self.last_down = self.held_triggers | (clicks & touches)
                 press = (down & ~previous) & touches if previous is not None else 0
-                if b:
-                    # Remove just the stock Escape binding from the helper
-                    # layout. Leave a user's custom B action entirely to Steam.
-                    b_edge = (previous_b is False and self.ready and not report[9] & 32
-                              and self.chord.desktop_b_closes_keyboard() and self.recovery_editor())
-                    if b_edge or (previous is not None and previous & ERASE_BUTTON):
+                if x_down and not guide_down:
+                    if erase_edge and self.recovery_editor():
+                        press |= ERASE_BUTTON
+                    if press & ERASE_BUTTON or held_erase:
                         down |= ERASE_BUTTON
                         self.last_down = down
-                        if b_edge:
-                            press |= ERASE_BUTTON
                 if press and not self.ready and not self.recovery_editor():
                     self.stop_input()
                     continue
@@ -307,7 +330,7 @@ class Bridge(dbus.service.Object):
                 preload = self.preloaded & ~prior_load & ~down if previous is not None else 0
                 force = tuple(display_force(value) if touches & (1 << side) else 0
                               for side, value in enumerate(raw_force))
-                frame = (*coords, touches, down & (touches | ERASE_BUTTON), *force) if touches or b else (0,) * 8
+                frame = (*coords, touches, down & (touches | ERASE_BUTTON), *force) if touches or down & ERASE_BUTTON else (0,) * 8
                 now = time.monotonic()
                 for side, sample in enumerate(self.force_samples):
                     if sample is None:

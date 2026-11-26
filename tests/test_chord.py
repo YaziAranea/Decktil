@@ -30,31 +30,49 @@ class KeyboardActions(unittest.TestCase):
         self.action._allow_mouse_activation = Mock()
         self.action.update(False, False)
 
-    def test_alone_x_toggles_and_log_echo_preserves_each_intent(self):
-        self.action.update(False, True)
+    def test_alone_x_opens_edits_then_ignores_steam_echo_after_empty_close(self):
+        self.assertFalse(self.action.update(False, True))
         self.assertTrue(self.action.want_open)
         self.action._advance()
         self.action.panel.forceActivate.assert_called_once()
         self.state["visible"] = True
         self.action._advance()
+        # Holding the opening press through activation cannot start erasing.
+        self.assertFalse(self.action.update(False, True))
         self.action.update(False, False)
-        self.action.stock_open = True
         self.action._desktop_opened()
         self.action._advance()
-        self.assertTrue(self.action.want_open)
-        self.steam.assert_called_once_with("close")
-        self.action.update(False, True)
-        self.assertFalse(self.action.want_open)
-        self.action._advance()
-        self.action.properties.Set.assert_called_once()
-        self.action.panel.forceActivate.assert_called_once()
+        self.assertTrue(self.action.update(False, True))
+        self.assertIsNone(self.action.stage)
+        self.assertFalse(self.action.update(False, True))
+        self.action._desktop_opened()
+        self.assertIsNone(self.action.stage)
+        self.action._request(False)  # CloseOnEmpty accepted this edit edge.
+        self.action.update(False, False)
         self.state["visible"] = False
-        self.action.update(False, False)
         self.action._advance()
         self.action._desktop_opened()
+        self.assertIsNone(self.action.stage)
         self.assertFalse(self.action.want_open)
-        self.action._advance()
         self.action.panel.forceActivate.assert_called_once()
+
+    def test_steam_log_before_bare_x_does_not_erase_opening_press(self):
+        self.action._desktop_opened()
+        self.state["visible"] = True
+        self.action._advance()
+        self.assertFalse(self.action.update(False, True))
+        self.assertTrue(self.action.want_open)
+        self.action.update(False, False)
+        self.now.return_value += 1
+        self.action._desktop_opened()
+        self.action._advance()
+        self.assertTrue(self.action.update(False, True))
+
+    def test_second_x_during_cold_start_keeps_open_request(self):
+        self.action.update(False, True)
+        self.action.update(False, False)
+        self.assertFalse(self.action.update(False, True))
+        self.assertTrue(self.action.want_open)
 
     def test_physical_toggle_and_delayed_echo(self):
         for was_visible in (True, False):
@@ -156,7 +174,7 @@ class KeyboardActions(unittest.TestCase):
         saved.write_text(custom)
         self.assertEqual(chord.mapping.inherited_template(saved), custom)
 
-    def test_temporary_b_removes_only_plain_escape(self):
+    def test_temporary_profile_inherits_desktop_b(self):
         config = '''"controller_mappings" { "controller_type" "controller_neptune"
           "group" {"id" "1" "inputs" {
               "button_b" {"activators" {"Full_Press" {"bindings" {"binding" "key_press ESCAPE, , "}}}}
@@ -165,14 +183,10 @@ class KeyboardActions(unittest.TestCase):
           "preset" {"id" "0" "group_source_bindings" {"1" "button_diamond active"}}
         }'''
         source = self.root / "desktop"
-        source.write_text(config)
-        pos = chord.mapping.keyboard_b_binding(config)
-        self.assertEqual(chord.mapping.inherited_template(source), config[:pos[0]] + config[pos[1]:])
-        self.assertEqual(source.read_text(), config)
-        for custom in (config.replace("ESCAPE", "RETURN"), config.replace("Full_Press", "Long_Press")):
-            source.write_text(custom)
-            self.assertIsNone(chord.mapping.keyboard_b_binding(custom))
-            self.assertEqual(chord.mapping.inherited_template(source), custom)
+        for layout in (config, config.replace("ESCAPE", "RETURN"), config.replace("Full_Press", "Long_Press")):
+            source.write_text(layout)
+            self.assertEqual(chord.mapping.inherited_template(source), layout)
+            self.assertEqual(source.read_text(), layout)
 
 
 if __name__ == "__main__":

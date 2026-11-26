@@ -103,13 +103,16 @@ class TrackpadHaptics(unittest.TestCase):
 
         adapter = object.__new__(bridge.Bridge)
         adapter.chord = Mock(stage=None, armed=False)
+        adapter.chord.update.return_value = False
+        adapter.erase_serial = None
         adapter.Frame = Mock()
         adapter.feedback = haptics.TrackpadFeedback()
         adapter.feedback.send = Mock()
         adapter.fd = 42
         adapter.ready = adapter.visible = True
         adapter.locked = adapter.in_game = False
-        adapter.last_frame = adapter.last_down = adapter.physical_b = None
+        adapter.desktop_erase_until = 0.0
+        adapter.last_frame = adapter.last_down = None
         adapter.held_triggers = adapter.preloaded = adapter.frame_serial = 0
         adapter.last_send = 0
         adapter.recent_frames = {}

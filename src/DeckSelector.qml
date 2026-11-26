@@ -17,10 +17,12 @@ QtObject {
     property real rightPressure: 0
     property int eraseOwner: 0
     property int eraseSerial: 0
-    property int placeholderSerial: 0
-    property double placeholderDeadline: 0
+    property int emptyCheckSerial: 0
+    property double emptyCheckDeadline: 0
+    property double confirmEmptyAfter: 0
+    property bool probingToEnd: false
     property double caretCheckAt: 0
-    property var placeholderInputItem: null
+    property var emptyCheckInputItem: null
     property double lastControllerFrame: 0
     readonly property int eraseButton: 16
 
@@ -123,11 +125,23 @@ QtObject {
         eraseSerial = 0
     }
 
-    function cancelPlaceholder() {
-        placeholderTimer.stop()
-        placeholderSerial = 0
-        placeholderInputItem = null
+    function cancelEmptyCheck() {
+        emptyCheckTimer.stop()
+        emptyCheckSerial = 0
+        emptyCheckInputItem = null
         caretCheckAt = 0
+        probingToEnd = false
+    }
+
+    function watchForEmpty(serial, initiallyEmpty) {
+        const now = Date.now()
+        emptyCheckSerial = serial
+        emptyCheckInputItem = InputContext.inputItem
+        emptyCheckDeadline = now + 365
+        confirmEmptyAfter = initiallyEmpty ? now + 100 : 0
+        caretCheckAt = 0
+        probingToEnd = false
+        emptyCheckTimer.restart()
     }
 
     function refreshEditor() {
@@ -157,21 +171,16 @@ QtObject {
         refreshEditor()
         const atStart = atUnselectedStart()
         const surrounding = InputContext.surroundingText
-        if (atStart && !surrounding.length) {
-            if (owner === eraseButton && eraseSerial > 0)
-                requestClose(eraseSerial)
-            return false
-        }
-        // An empty Chromium paragraph and an actual newline can both appear
-        // as a single LF at offset zero. Send the normal Backspace once.
-        const ambiguous = owner === eraseButton && atStart && surrounding === "\n"
-        if (ambiguous) {
-            placeholderSerial = eraseSerial
-            placeholderInputItem = InputContext.inputItem
-            placeholderDeadline = Date.now() + 200
-            caretCheckAt = 0
-            placeholderTimer.restart()
-        }
+        const initiallyEmpty = atStart && !surrounding.length
+        // Wayland reports the result after the key event, often after X is
+        // released. Let the editor perform the deletion (including selection
+        // and grapheme handling) and dismiss only after it reports empty.
+        const physical = owner === eraseButton && eraseSerial > 0
+        const ambiguous = physical && atStart && surrounding === "\n"
+        if (physical && !(InputContext.inputMethodHints & (Qt.ImhHiddenText | Qt.ImhSensitiveData)))
+            watchForEmpty(eraseSerial, initiallyEmpty)
+        // The first Wayland snapshot can be blank even in a populated field.
+        // Sending Backspace lets the editor handle the press and publish its state.
         InputContext.inputEngine.virtualKeyClick(Qt.Key_Backspace, "", Qt.NoModifier)
         return !ambiguous
     }
@@ -210,34 +219,56 @@ QtObject {
             restart()
         }
     }
-    property Timer placeholderTimer: Timer {
+    property Timer emptyCheckTimer: Timer {
         interval: 25
         repeat: true
         onTriggered: {
             const now = Date.now()
-            if (!selector.layout.visible || now > selector.placeholderDeadline
-                    || selector.placeholderInputItem !== InputContext.inputItem) {
-                selector.cancelPlaceholder()
+            if (!selector.layout.visible || now > selector.emptyCheckDeadline
+                    || selector.emptyCheckInputItem !== InputContext.inputItem) {
+                selector.cancelEmptyCheck()
                 return
             }
             selector.refreshEditor()
             const text = InputContext.surroundingText
             const pos = InputContext.cursorPosition
-            if (selector.caretCheckAt && text === "\n" && pos === 1
-                    && InputContext.anchorPosition === pos && !InputContext.preeditText.length
-                    && !InputContext.selectedText.length
+            const reachedNextParagraph = selector.confirmEmptyAfter && !selector.probingToEnd
+                    && text.length && text !== "\n"
+            if (selector.caretCheckAt && (pos > 0 || reachedNextParagraph) && pos === InputContext.anchorPosition
+                    && !InputContext.selectedText.length && !InputContext.preeditText.length
                     && !(InputContext.inputMethodHints & (Qt.ImhHiddenText | Qt.ImhSensitiveData))) {
-                // The caret reached the next line. Restore it in the same field.
-                selector.cancelPlaceholder()
-                InputContext.inputEngine.virtualKeyClick(Qt.Key_Up, "", Qt.NoModifier)
+                // A navigation key moved the caret away from the original
+                // start. Undo that move in the same field.
+                const restoreKey = selector.probingToEnd ? Qt.Key_Home : Qt.Key_Up
+                selector.cancelEmptyCheck()
+                InputContext.inputEngine.virtualKeyClick(restoreKey, "", Qt.NoModifier)
             } else if (!selector.atUnselectedStart() || (text !== "" && text !== "\n")) {
-                selector.cancelPlaceholder()
-            } else if (!text.length || (selector.caretCheckAt && now >= selector.caretCheckAt)) {
-                const serial = selector.placeholderSerial
-                selector.cancelPlaceholder()
+                // The editor may still be reporting the state before Backspace.
+                // A later poll can see its reply even after a quick tap.
+                if (selector.caretCheckAt)
+                    selector.cancelEmptyCheck()
+            } else if (!text.length && selector.confirmEmptyAfter && !selector.caretCheckAt) {
+                // Cold Qt fields can initially report zero length. Backspace
+                // at their actual start is a no-op and sends no new snapshot.
+                if (now >= selector.confirmEmptyAfter) {
+                    selector.probingToEnd = true
+                    selector.caretCheckAt = now + 85
+                    InputContext.inputEngine.virtualKeyClick(Qt.Key_End, "", Qt.NoModifier)
+                }
+            } else if (selector.probingToEnd && now >= selector.caretCheckAt) {
+                // End also stays put on an empty first line of a multiline
+                // field. Down distinguishes it from a genuinely empty editor.
+                selector.probingToEnd = false
+                selector.caretCheckAt = now + 90
+                InputContext.inputEngine.virtualKeyClick(Qt.Key_Down, "", Qt.NoModifier)
+            } else if ((!text.length && !selector.caretCheckAt)
+                    || (!selector.probingToEnd && selector.caretCheckAt && now >= selector.caretCheckAt)) {
+                const serial = selector.emptyCheckSerial
+                selector.cancelEmptyCheck()
+                selector.stopErase()
                 if (serial > 0)
                     selector.requestClose(serial)
-            } else if (!selector.caretCheckAt) {
+            } else if (text === "\n" && !selector.caretCheckAt) {
                 // ProseMirror preserves its trailing <br> after Backspace.
                 // Down can reach a real next line, but not that decoration.
                 // Avoid Right, which can accept an inline completion in Codex.
@@ -248,15 +279,15 @@ QtObject {
     }
     property Connections editorFocus: Connections {
         target: InputContext
-        function onInputItemChanged() { selector.stopErase(); selector.cancelPlaceholder(); selector.cancelHolds() }
-        function onLocaleChanged() { selector.cancelHolds() }
+        function onInputItemChanged() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
+        function onLocaleChanged() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
     }
     property Connections layoutVisibility: Connections {
         target: selector.layout
         function onVisibleChanged() {
             if (!selector.layout.visible) {
                 selector.stopErase()
-                selector.cancelPlaceholder()
+                selector.cancelEmptyCheck()
                 selector.cancelHolds()
             }
         }
@@ -265,7 +296,7 @@ QtObject {
     function updateFrame(lx, ly, rx, ry, touches, pressed, heldMask, leftForce, rightForce, serial) {
         if (serial === 0) {
             stopErase()
-            cancelPlaceholder()
+            cancelEmptyCheck()
             cancelHolds()
         }
         if (!layout.visible || layout.width <= 0 || layout.height <= 0)
@@ -295,7 +326,7 @@ QtObject {
         const selectable = (leftKey ? 1 : 0) | (rightKey ? 2 : 0)
         const clicked = Number(pressed) & selectable
         if (clicked || (Number(pressed) & eraseButton))
-            cancelPlaceholder()
+            cancelEmptyCheck()
         const pressureTick = (Number(pressed) >> 2) & selectable
         const hovered = moved & ~held & ~clicked & ~pressureTick
         // Switching language or hiding the panel can unload this layout during activation.
@@ -324,7 +355,7 @@ QtObject {
         service: "local.deck.PlasmaKeyboard"
         path: "/Pads"
         iface: "local.deck.PlasmaKeyboard"
-        function dbusCancelRepeat() { selector.stopErase(); selector.cancelPlaceholder(); selector.cancelHolds() }
+        function dbusCancelRepeat() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
         function dbusFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial) {
             selector.updateFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial)
         }

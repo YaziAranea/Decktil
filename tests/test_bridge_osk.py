@@ -34,13 +34,15 @@ class DesktopOskHandoff(unittest.TestCase):
         a.ready = a.visible = True
         a.locked = a.in_game = False
         a.chord = Mock(last_desktop_osk=10, stage=None, armed=False, stock_open=False, echo_until=0)
+        a.chord.update.return_value = False
         a.chord._state.return_value = dict(visible=True, available=True, active=True, mode=1,
                                           activeClientSupportsTextInput=True)
         a.fd = 101
         a.steam_pid = 42
         a.verified_pin = pin.copy()
         a.route_until = 0
-        a.last_frame = a.last_down = a.physical_b = None
+        a.desktop_erase_until = 0.0
+        a.last_frame = a.last_down = None
         a.erase_serial = None
         a.erase_release_deadline = 0.0
         a.frame_serial = a.held_triggers = a.preloaded = a.last_send = 0
@@ -105,22 +107,38 @@ class DesktopOskHandoff(unittest.TestCase):
         self.assertIsNone(a.verified_pin)
         a.PersonalChanged.assert_called_once_with()
 
-    def test_physical_erase_is_single_edge_released_without_touch(self):
+    def physical_reports(self):
         a = self.adapter
-        a.chord.desktop_b_closes_keyboard.return_value = True
+        # Run the actual shortcut classifier and report decoder together.
+        state = a.chord._state.return_value
+        with patch.dict(os.environ, XDG_SESSION_TYPE="x11"), patch.object(bridge.dbus, "Interface"):
+            a.chord = bridge.SteamChord(Mock())
+        a.chord.enabled = True
+        a.chord._state = lambda: state
+        a.chord._desktop_x_enabled = Mock(return_value=True)
+        a.chord._request = Mock()
         rd, wr = os.pipe2(os.O_NONBLOCK)
         self.addCleanup(os.close, rd)
         self.addCleanup(os.close, wr)
-        def report(b, *, guide=False):
+        def report(x=False, *, b=False, guide=False, pad=False):
             data = bytearray(64)
             data[:4] = bytes((1, 0, 9, 64))
-            data[8] = 0x20 if b else 0
+            data[8] = (0x40 if x else 0) | (0x20 if b else 0)
             data[9] = 0x20 if guide else 0
+            data[10] = 0x0a if pad else 0
             os.write(wr, data)
             a.read_reports(rd, GLib.IO_IN)
+        return report
 
-        for b in (False, True, True, False, True, False):
-            report(b)
+    def test_physical_erase_is_single_edge_released_without_touch(self):
+        a = self.adapter
+        report = self.physical_reports()
+        # First report with X already down, and B-only taps, have no editing edge.
+        report(True)
+        report(b=True)
+        report()
+        for x in (True, True, False, True, False):
+            report(x)
         frames = [call.args for call in a.Frame.call_args_list]
         bit = bridge.ERASE_BUTTON
         self.assertEqual([(row[5], row[6]) for row in frames],
@@ -133,11 +151,55 @@ class DesktopOskHandoff(unittest.TestCase):
         a.chord._request.assert_called_once_with(False)
         a.Frame.reset_mock()
         report(True, guide=True); report(False)
-        a.chord.desktop_b_closes_keyboard.return_value = False
+        self.assertEqual(a.chord._request.call_args.args, (False,))
+        a.chord._desktop_x_enabled.return_value = False
         report(True); report(False)
         self.assertFalse(any(call.args[5] for call in a.Frame.call_args_list))
 
-    def test_empty_close_stays_with_current_editor_and_recent_b(self):
+    def test_modifier_and_profile_changes_cannot_rearm_a_held_press(self):
+        a = self.adapter
+        report = self.physical_reports()
+        report()
+        report(True)
+        serial = a.erase_serial
+        self.assertIsNotNone(serial)
+        a.last_down = a.last_frame = None  # New helper pin starts a pad baseline.
+        report(True)
+        self.assertEqual(a.Frame.call_args.args[5:7], (0, bridge.ERASE_BUTTON))
+        report(True, guide=True)
+        report(True)
+        self.assertEqual(a.Frame.call_args.args[5:7], (0, 0))
+        a.CloseOnEmpty(serial)
+        a.chord._request.assert_not_called()
+        report()
+        report(True)
+        a.last_down = a.last_frame = None
+        report()
+        self.assertAlmostEqual(a.erase_release_deadline, self.clock.return_value + .4)
+
+    def test_fresh_x_during_verified_desktop_acquisition_does_not_bind_pads(self):
+        a = self.adapter
+        report = self.physical_reports()
+        a.ready = False
+        a.job = Mock()
+        self.enterContext(patch.object(bridge.mapping, "desktop_source", return_value=(7, Path("vdf"))))
+        self.app.return_value = bridge.mapping.DESKTOP
+        report()
+        report(True, pad=True)
+        serial = a.erase_serial
+        self.assertIsNotNone(serial)
+        self.assertEqual(a.Frame.call_args.args[4:7], (0, bridge.ERASE_BUTTON, bridge.ERASE_BUTTON))
+        report(False, pad=True)
+        self.assertEqual(a.Frame.call_args.args[4:7], (0, 0, 0))
+        a.CloseOnEmpty(serial)
+        a.chord._request.assert_called_once_with(False)
+        self.app.return_value = bridge.mapping.STEAM_UI
+        a.Frame.reset_mock()
+        report(True, pad=True)
+        a.Frame.assert_not_called()
+        self.assertIsNone(a.erase_serial)
+
+    def test_empty_close_stays_with_current_editor_and_recent_x(self):
         a = self.adapter
         a.erase_serial = 17
         a.erase_release_deadline = 10.5

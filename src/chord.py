@@ -67,7 +67,7 @@ def _steam_request(action):
 
 
 class SteamChord:
-    """Toggle Plasma once per physical desktop X or Steam+X press."""
+    """Open or edit with desktop X, and toggle the panel with Steam+X."""
 
     def __init__(self, session_bus):
         self.enabled = (
@@ -84,6 +84,7 @@ class SteamChord:
         self.timer = 0
         self.x = None
         self.armed = False
+        self.edit_echo = False
         self.want_open = False
         self.panel_seen = False
         self.deadline = 0
@@ -93,7 +94,7 @@ class SteamChord:
         self.close_after = 0.0
         self.binding_path = None
         self.binding_stamp = None
-        self.binding_buttons = set()
+        self.x_enabled = False
         self.next_reconcile = 0
         self.log_identity = None
         self.log_offset = 0
@@ -115,6 +116,7 @@ class SteamChord:
         self.stage = None
         self.x = None
         self.armed = False
+        self.edit_echo = False
         self.echo_until = 0.0
         self.recent_log_open = None
         self.stock_open = False
@@ -234,9 +236,11 @@ class SteamChord:
         self.last_desktop_osk = now
         self._close_stock(now)
         # Steam's action is a second observation of either physical shortcut.
-        # Only a physical press toggles. A log-only request opens the panel.
+        # An editing press may already have erased the last character and
+        # closed Plasma. Its Steam notification must never reopen the panel.
         if self.armed or now <= self.echo_until:
-            self._request(self.want_open)
+            if not self.edit_echo:
+                self._request(self.want_open)
         else:
             self.recent_log_open = (now, self.want_open if self.stage else bool(state.get("visible")))
             self._request(True)
@@ -244,59 +248,56 @@ class SteamChord:
     def _hide_panel(self):
         self.properties.Set(KEYBOARD_INTERFACE, "active", dbus.Boolean(False, variant_level=1), timeout=0.4)
 
-    def _desktop_button_enabled(self, button):
-        # Intercept only known, unambiguous bindings in the desktop layout.
+    def _desktop_x_enabled(self):
+        # Keep custom desktop bindings under Steam's control.
         try:
             if self.binding_path is None or not self.binding_path.is_file():
                 _, self.binding_path = mapping.desktop_source()
             stat = self.binding_path.stat()
-            stamp = (stat.st_ino, stat.st_mtime_ns)
+            stamp = (self.binding_path, stat.st_ino, stat.st_mtime_ns)
             if stamp != self.binding_stamp:
-                layout = self.binding_path.read_text()
-                self.binding_buttons = {name for name, finder in (("x", mapping.keyboard_x_binding),
-                                                                  ("b", mapping.keyboard_b_binding))
-                                        if finder(layout)}
+                self.x_enabled = bool(mapping.keyboard_x_binding(self.binding_path.read_text()))
                 self.binding_stamp = stamp
-            return button in self.binding_buttons
+            return self.x_enabled
         except (OSError, ValueError, RuntimeError):
             return False
 
-    def _desktop_x_enabled(self):
-        return self._desktop_button_enabled("x")
-
-    def desktop_b_closes_keyboard(self):
-        return self._desktop_button_enabled("b")
-
     def update(self, guide_down, x_down):
+        """Return True once for bare X pressed on an already open panel."""
         if not self.enabled:
-            return
+            return False
         previous, self.x = self.x, bool(x_down)
-        now = time.monotonic()
-        if self.armed and not x_down:
-            self.armed = False
-            self.echo_until = now + 0.85
         if previous is not False or not x_down:
-            return
+            if self.armed and not x_down:
+                self.armed = False
+                self.echo_until = time.monotonic() + 0.85
+            return False
         try:
             if mapping.running_game():
-                return
+                return False
         except OSError:
-            return
+            return False
         state = self._state()
         if not (state.get("available") and state.get("mode")):
-            return
+            return False
         if not guide_down and not ((state.get("visible") or state.get("activeClientSupportsTextInput"))
                                    and self._desktop_x_enabled()):
-            return
+            return False
         was_visible = self.want_open if self.stage else bool(state.get("visible"))
         # A Steam log notification can beat the HID callback for the very
-        # same press. Toggle against the visibility before that notification.
+        # same press. Classify against the visibility before the notification.
+        now = time.monotonic()
         if self.recent_log_open is not None and now - self.recent_log_open[0] < 0.25:
             was_visible = self.recent_log_open[1]
         self.recent_log_open = None
         self.armed = True
         self.echo_until = now + 0.85
-        self._request(not was_visible)
+        self.edit_echo = not guide_down and was_visible and bool(state.get("visible"))
+        if self.edit_echo:
+            self.want_open = True
+            return True
+        self._request(not was_visible if guide_down else True)
+        return False
 
     def _request(self, show):
         if self.stage and self.want_open == show:

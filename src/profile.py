@@ -186,21 +186,16 @@ def keyboard_x_binding(layout):
     return default_button_binding(layout, "button_x", "controller_action SHOW_KEYBOARD")
 
 
-def keyboard_b_binding(layout):
-    return default_button_binding(layout, "button_b", "key_press ESCAPE")
-
-
 def inherited_template(source):
     original = source.read_text()
     if '"controller_neptune"' not in original or '"group_source_bindings"' not in original:
         raise RuntimeError("Unexpected Steam Deck desktop configuration")
-    # Handle the two standard panel actions directly. Leave custom actions
-    # intact, including alternate activators and chords on the same button.
-    for find_binding in (keyboard_x_binding, keyboard_b_binding):
-        binding = find_binding(original)
-        if binding:
-            first, last = binding
-            original = original[:first] + original[last:]
+    # The bridge handles the stock X keyboard action while the panel is open.
+    # Inherit B and any custom X bindings from the current desktop layout.
+    binding = keyboard_x_binding(original)
+    if binding:
+        first, last = binding
+        original = original[:first] + original[last:]
     result = ACTION.sub(r'\1inactive\2', original).replace(str(source), str(TEMPLATE.resolve()))
     return re.sub(r'(?m)^(\s*"title"\s*)"[^"\n]*"', r'\1"Deck Plasma Keyboard"', result, count=1)
 

@@ -1,4 +1,5 @@
 """Recover only the obsolete controller mapping left by a closed desktop OSK."""
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -11,6 +12,49 @@ src = Path(__file__).resolve().parents[1] / "src/profile.py"
 spec = importlib.util.spec_from_file_location("steam_profile_recovery", src)
 profile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profile)
+
+
+class TemplateMigration(unittest.TestCase):
+    def test_enter_reloads_old_template_with_desktop_b_and_rear_bindings(self):
+        layout = '''"controller_mappings" {
+          "controller_type" "controller_neptune"
+          "group" {"id" "1" "inputs" {
+            "button_b" {"activators" {"Full_Press" {"bindings" {"binding" "key_press ESCAPE, , "}}}}
+            "button_x" {"activators" {"Full_Press" {"bindings" {"binding" "controller_action SHOW_KEYBOARD, , "}}}}
+            "button_back_left" {"activators" {"Full_Press" {"bindings" {"binding" "key_press LCTRL, , "}}}}
+          }}
+          "preset" {"id" "0" "group_source_bindings" {"1" "button_diamond active"}}
+        }'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            desktop = root / "desktop.vdf"
+            template = root / "helper.vdf"
+            digest = root / "template.sha256"
+            desktop.write_text(layout)
+            expected = layout.replace('"binding" "controller_action SHOW_KEYBOARD, , "', "")
+            template.write_text(expected.replace('"binding" "key_press ESCAPE, , "', ""))
+            keyboard = 0x80001234
+            selected = profile.DESKTOP
+
+            def activate(app):
+                nonlocal selected
+                self.assertEqual(app, keyboard)
+                self.assertEqual(template.read_text(), expected)  # Steam reads the refreshed inode.
+                selected = app
+
+            with patch.multiple(profile, KEYBOARD=keyboard, TEMPLATE=template, TEMPLATE_DIGEST=digest,
+                                STATE=root / "lease"), \
+                    patch.object(profile, "steam_pid", return_value=1), \
+                    patch.object(profile, "running_game", return_value=False), \
+                    patch.object(profile, "active_app", side_effect=lambda _: selected), \
+                    patch.object(profile, "selected_path", return_value=template), \
+                    patch.object(profile, "desktop_source", return_value=(0, desktop)), \
+                    patch.object(profile, "force", side_effect=activate) as force:
+                profile.enter()
+                profile.enter()
+                force.assert_called_once_with(keyboard)
+            self.assertEqual(desktop.read_text(), layout)
+            self.assertEqual(digest.read_text(), hashlib.sha256(expected.encode()).hexdigest())
 
 
 class ProfileRecovery(unittest.TestCase):
