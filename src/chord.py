@@ -19,6 +19,30 @@ STEAM_KEYBOARD_TITLES = {
 }
 log = logging.getLogger(__name__)
 OSK_EVENT = re.compile(rb"\] Set OSK active ([01]) and appid (-?\d+)\r?$")
+CLIENT_FOCUS = b"OnFocusWindowChanged to window type: k_nGameIDControllerConfigs_ClientUI, AppID 769"
+DESKTOP_FOCUS = b"OnFocusWindowChanged to window type: k_nGameIDControllerConfigs_Desktop, AppID 413080"
+
+
+def _client_focus(line):
+    if line.endswith(CLIENT_FOCUS):
+        return True
+    if line.endswith(DESKTOP_FOCUS):
+        return False
+    return None
+
+
+def _initial_client_focus():
+    # Restore only the current Steam session's real window ownership. The
+    # keyboard and Guide action sets can briefly select 769 on any desktop.
+    try:
+        for line in mapping.recent_log("controller_ui.txt"):
+            if "OnFocusWindowChanged to window type:" in line:
+                owner = _client_focus(line.encode())
+                if owner is not None:
+                    return owner
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return _fullscreen_steam()
 
 
 def _xdotool(*args):
@@ -30,6 +54,18 @@ def _xdotool(*args):
     except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _fullscreen_steam():
+    wid = _xdotool("getactivewindow")
+    if not wid or not wid.isdecimal() or (_xdotool("getwindowclassname", wid) or "").lower() != "steam":
+        return False
+    try:
+        state = subprocess.run(["/usr/bin/xprop", "-id", wid, "_NET_WM_STATE"],
+                               capture_output=True, timeout=.4, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return b"_NET_WM_STATE_FULLSCREEN" in state.split(b"=", 1)[-1].replace(b",", b" ").split()
 
 
 def _steam_keyboard():
@@ -100,6 +136,7 @@ class SteamChord:
         self.log_offset = 0
         self.log_fragment = b""
         self.stock_open = False
+        self.client_ui = False
         self.last_desktop_osk = None
         state_dir = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
         self.mode_record = state_dir / "deck-plasma" / "chord-mode"
@@ -173,7 +210,7 @@ class SteamChord:
     def reconcile(self, visible):
         """Remove a lingering Steam keyboard without dismissing the editor's panel."""
         now = time.monotonic()
-        if not self.enabled or now < self.next_reconcile:
+        if not self.enabled or self.client_ui or now < self.next_reconcile:
             return
         self.next_reconcile = now + 0.4
         if (self.stock_open or visible) and _steam_keyboard() is not None:
@@ -200,6 +237,7 @@ class SteamChord:
                 self.log_offset = stat.st_size
                 self.log_fragment = b""
                 self.stock_open = False
+                self.client_ui = bool(pid) and _initial_client_focus()
                 return GLib.SOURCE_CONTINUE
             if self.log_offset == stat.st_size:
                 return GLib.SOURCE_CONTINUE
@@ -210,6 +248,11 @@ class SteamChord:
             self.log_fragment = lines.pop()
             opening = False
             for line in lines:
+                owner = _client_focus(line.rstrip(b"\r"))
+                if owner is not None:
+                    self.client_ui = owner
+                    if owner:
+                        opening = False
                 if b"Path for App ID 413080," in line:
                     self.binding_path = None
                 match = OSK_EVENT.search(line)
@@ -220,9 +263,9 @@ class SteamChord:
                 current = active == b"1" and desktop
                 # The compositor can dismiss the popup before we read the log.
                 # A close later in the same batch must not erase the request.
-                opening |= current and not self.stock_open
+                opening |= current and not self.stock_open and not self.client_ui
                 self.stock_open = current
-            if opening and allowed and not mapping.running_game():
+            if opening and allowed and not self.client_ui and not mapping.running_game():
                 self._desktop_opened()
         except (OSError, ValueError) as error:
             log.debug("Steam keyboard event unavailable: %s", error)
@@ -272,6 +315,11 @@ class SteamChord:
                 self.armed = False
                 self.echo_until = time.monotonic() + 0.85
             return False
+        # The controller can deliver X before the periodic log poll. Consume
+        # a new focus transition before requesting a KWin panel over Steam.
+        self.poll_desktop_actions()
+        if self.client_ui:
+            return False
         try:
             if mapping.running_game():
                 return False
@@ -279,6 +327,9 @@ class SteamChord:
             return False
         state = self._state()
         if not (state.get("available") and state.get("mode")):
+            return False
+        if not state.get("activeClientSupportsTextInput") and _fullscreen_steam():
+            # The first button can precede even Steam's ClientUI log entry.
             return False
         if not guide_down and not ((state.get("visible") or state.get("activeClientSupportsTextInput"))
                                    and self._desktop_x_enabled()):

@@ -33,7 +33,8 @@ class DesktopOskHandoff(unittest.TestCase):
         a = self.adapter = object.__new__(bridge.Bridge)
         a.ready = a.visible = True
         a.locked = a.in_game = False
-        a.chord = Mock(last_desktop_osk=10, stage=None, armed=False, stock_open=False, echo_until=0)
+        a.chord = Mock(last_desktop_osk=10, stage=None, armed=False, stock_open=False, echo_until=0,
+                       client_ui=False)
         a.chord.update.return_value = False
         a.chord._state.return_value = dict(visible=True, available=True, active=True, mode=1,
                                           activeClientSupportsTextInput=True)
@@ -114,6 +115,7 @@ class DesktopOskHandoff(unittest.TestCase):
         with patch.dict(os.environ, XDG_SESSION_TYPE="x11"), patch.object(bridge.dbus, "Interface"):
             a.chord = bridge.SteamChord(Mock())
         a.chord.enabled = True
+        a.chord.poll_desktop_actions = Mock()
         a.chord._state = lambda: state
         a.chord._desktop_x_enabled = Mock(return_value=True)
         a.chord._request = Mock()
@@ -129,6 +131,29 @@ class DesktopOskHandoff(unittest.TestCase):
             os.write(wr, data)
             a.read_reports(rd, GLib.IO_IN)
         return report
+
+    def test_big_picture_closes_pending_plasma_and_leaves_native_pads(self):
+        a = self.adapter
+        a.game_running = False
+        a.panel_epoch = 0
+        a.popup_guard = Mock()
+        a.sync_profile = Mock()
+        a.props = Mock()
+        a.props.GetAll.return_value = dict(visible=True, available=True, mode=1)
+        a.chord.client_ui = True
+        a.poll_desktop_actions()
+        a.chord._hide_panel.assert_called_once()
+        a.popup_guard.set_enabled.assert_called_with(False)
+        a.chord.reconcile.assert_not_called()
+        self.assertTrue(a.in_game)
+        self.assertFalse(a.can_route())
+        a.visibility()  # A late visibleChanged from the prior desktop activation.
+        self.assertEqual(a.chord._hide_panel.call_count, 2)
+        a.chord.client_ui = False
+        a.props.GetAll.return_value["visible"] = False
+        a.poll_desktop_actions()
+        self.assertFalse(a.in_game)
+        a.popup_guard.set_enabled.assert_called_with(True)
 
     def test_physical_erase_is_single_edge_released_without_touch(self):
         a = self.adapter

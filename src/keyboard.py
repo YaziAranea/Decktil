@@ -142,7 +142,7 @@ def add_alternate_keys(layout):
     return layout.replace("import QtQuick\n", 'import QtQuick\nimport "DeckAlternates.js" as Alternates\n', 1)
 
 
-def generate_layouts():
+def generate_layouts(*, gaming=False):
     layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     # All layout pages share one QML singleton, including when changing languages.
     style = layout_root / "DecktilStyle"
@@ -158,17 +158,26 @@ def generate_layouts():
             continue
         dest.mkdir(exist_ok=True)
         local_delegate = dest / "DeckSelector.qml"
-        if not local_delegate.exists():
+        if gaming:
+            write_layout(local_delegate, DELEGATE.read_text())
+        elif not local_delegate.exists():
             local_delegate.symlink_to(DELEGATE)
         # QML resolves relative JS imports against the component's real path.
-        for component in ("DeckWordRow.qml", "DeckPrediction.js", "DeckGrammar.js", "DeckPersonal.qml", "DeckLearning.js",
-                          "DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml", "DeckAppearance.qml"):
+        components = ("DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml", "DeckAppearance.qml",
+                      "DeckPrediction.js", "DeckGrammar.js")
+        if gaming:
+            components += ("DeckGameWordRow.qml",)
+        else:
+            components += ("DeckWordRow.qml", "DeckPersonal.qml", "DeckLearning.js")
+        for component in components:
             write_layout(dest / component, DELEGATE.with_name(component).read_text())
-        code = "ru" if language.name == "ru_RU" else "en"
-        dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
-        write_predictions(dest / "DeckNext.js", dictionary.parent / f"{code}-next.json.gz")
-        write_completions(dest / "DeckWords.js", dictionary, dest / "DeckSpelling.js")
-        write_morphology(dest / "DeckMorphData.js", dictionary.parent / "ru-morph.json.gz" if code == "ru" else None)
+        # SteamOS resolves en_US/main.fallback in the fallback layout directory.
+        if not gaming or (language / "main.qml").is_file():
+            code = "ru" if language.name == "ru_RU" else "en"
+            dictionary = DELEGATE.parent / "words" / f"{code}.txt.gz"
+            write_predictions(dest / "DeckNext.js", dictionary.parent / f"{code}-next.json.gz")
+            write_completions(dest / "DeckWords.js", dictionary, None if gaming else dest / "DeckSpelling.js")
+            write_morphology(dest / "DeckMorphData.js", dictionary.parent / "ru-morph.json.gz" if code == "ru" else None)
         for source in language.iterdir():
             target = dest / source.name
             if source.suffix != ".qml":
@@ -176,14 +185,21 @@ def generate_layouts():
                     target.symlink_to(source)
                 continue
             body = source.read_text()
+            if gaming:
+                # An external overlay cannot focus a Qt editor. Let the game
+                # panel own Shift and bind the native key labels to that state.
+                body = re.sub(r"(?m)^(\s*)Key \{", r"\1Key {\n\1    uppercased: decktilGamePanel.shifted && !noModifier", body)
+                body = re.sub(r"(?m)^(\s*)ShiftKey \{", r"\1ShiftKey {\n\1    enabled: true", body)
             # Each page gets its own delegate so symbol and locale changes drop old keys.
+            game_host = "; gamePanel: decktilGamePanel" if gaming else ""
             body = re.sub(r"(?m)^([ \t]*)KeyboardLayout \{", lambda m:
                 m[0] + "\n" + m[1] + "    id: deckLayout\n" + m[1] +
                 "    property QtObject deckAppearance: DeckAppearance { layout: deckLayout }\n" + m[1] +
-                f"    property QtObject deckSelector: DeckSelector {{ layout: deckLayout; typingScale: {scale} }}", body)
+                f"    property QtObject deckSelector: DeckSelector {{ layout: deckLayout; typingScale: {scale}{game_host} }}", body)
             if source.name == "main.qml":
                 body = add_alternate_keys(body)
-                body = re.sub(r"(?m)^(\s*)KeyboardRow \{", r"\1DeckWordRow {}\n\1KeyboardRow {", body, count=1)
+                row = "DeckGameWordRow { host: decktilGamePanel }" if gaming else "DeckWordRow {}"
+                body = re.sub(r"(?m)^([ \t]*)KeyboardRow \{", rf"\1{row}\n\1KeyboardRow {{", body, count=1)
             write_layout(target, body)
 
 

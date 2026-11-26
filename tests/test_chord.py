@@ -15,6 +15,8 @@ class KeyboardActions(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.enterContext(patch.object(chord.mapping, "ROOT", self.root))
+        self.fullscreen = self.enterContext(patch.object(chord, "_fullscreen_steam", return_value=False))
         self.enterContext(patch.dict(os.environ, XDG_SESSION_TYPE="x11"))
         self.enterContext(patch.object(chord.dbus, "Interface", return_value=Mock()))
         self.enterContext(patch.object(chord.mapping, "running_game", return_value=False))
@@ -109,6 +111,41 @@ class KeyboardActions(unittest.TestCase):
         self.action.panel.forceActivate.assert_called_once()
         self.steam.assert_called_once_with("close")
         self.assertEqual(self.action.last_desktop_osk, 10.0)
+
+    def test_client_ui_focus_precedes_chord_and_ignores_guide_and_osk_profiles(self):
+        log = self.root / "logs/controller_ui.txt"
+        log.parent.mkdir()
+        log.write_bytes(b"")
+        self.enterContext(patch.object(chord.mapping, "steam_pid", return_value=123))
+        self.action.poll_desktop_actions()
+        with log.open("ab") as stream:
+            stream.write(b"[01] " + chord.CLIENT_FOCUS + b"\r\n"
+                         b"[02] Loaded Config for Last Resort Path for App ID 443510, Controller 15: chord_neptune.vdf\n")
+        self.action.update(True, True)  # HID arrives before the next main-loop poll.
+        self.assertTrue(self.action.client_ui)
+        self.assertIsNone(self.action.stage)
+        with log.open("ab") as stream:
+            stream.write(b"[02] Set OSK active 1 and appid 769\r\n")
+        self.action.poll_desktop_actions()
+        self.action.reconcile(True)
+        self.steam.assert_not_called()
+        with log.open("ab") as stream:
+            stream.write(b"[03] " + chord.DESKTOP_FOCUS + b"\r\n"
+                         b"[04] OnFocusWindowChanged On Screen Keyboard Forcing to window type: KB ActionSet, AppID 769\n")
+        self.action.update(False, False)
+        self.action.update(True, True)
+        self.assertFalse(self.action.client_ui)
+        self.assertEqual(self.action.stage, "activate")
+
+    def test_restart_in_steam_ui_and_first_press_before_focus_log(self):
+        rows = ["[00] Set OSK active 1 and appid 769", "[00] " + chord.CLIENT_FOCUS.decode()]
+        with patch.object(chord.mapping, "recent_log", return_value=iter(rows)):
+            self.assertTrue(chord._initial_client_focus())
+        self.state["activeClientSupportsTextInput"] = False
+        self.fullscreen.return_value = True
+        self.action.update(True, True)
+        self.assertIsNone(self.action.stage)
+        self.steam.assert_not_called()
 
     def test_alone_x_leaves_other_bindings_and_non_editors(self):
         self.state["activeClientSupportsTextInput"] = False

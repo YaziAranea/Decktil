@@ -125,7 +125,7 @@ class Bridge(dbus.service.Object):
             self.locked = bool(lock.GetActive(dbus_interface="org.freedesktop.ScreenSaver", timeout=.5))
         except dbus.DBusException:
             pass
-        self.in_game = False
+        self.game_running = self.in_game = False
         self.maintenance()
         GLib.timeout_add(45, self.poll_desktop_actions)
         GLib.timeout_add(900, self.maintenance)
@@ -285,6 +285,10 @@ class Bridge(dbus.service.Object):
                 x_down = bool(report[8] & 0x40)
                 guide_down = bool(report[9] & 0x20)
                 erase_edge = self.chord.update(guide_down, x_down)
+                if self.chord.client_ui:
+                    if self.update_input_owner():
+                        self.visibility()
+                    continue
                 held_erase = self.erase_serial is not None and self.erase_release_deadline == float("inf")
                 if held_erase and guide_down:
                     self.cancel_erase()
@@ -388,6 +392,12 @@ class Bridge(dbus.service.Object):
         if self.visible != was_visible:
             self.panel_epoch += 1
             self.PersonalChanged()
+        if self.visible and self.chord.client_ui and not self.locked:
+            # A preceding KWin activation can finish after Steam took focus.
+            try:
+                self.chord._hide_panel()
+            except dbus.DBusException:
+                pass
         self.popup_guard.set_enabled(bool(self.chord.enabled and self.fd is not None
                                          and not self.locked and not self.in_game
                                          and state.get("available") and state.get("mode")))
@@ -454,7 +464,9 @@ class Bridge(dbus.service.Object):
         return mapping.orphaned_index() is not None
 
     def poll_desktop_actions(self):
-        self.chord.poll_desktop_actions(not (self.locked or self.in_game))
+        self.chord.poll_desktop_actions(not (self.locked or self.game_running))
+        if self.update_input_owner():
+            self.visibility()
         stamp = self.chord.last_desktop_osk
         if stamp and self.visible and not self.locked and not self.in_game and time.monotonic() - stamp < 1.5:
             self.validate_profile()
@@ -498,17 +510,28 @@ class Bridge(dbus.service.Object):
             pass
         self.stop_input()
 
+    def update_input_owner(self):
+        # Fullscreen Steam in KDE uses its own controller configuration just
+        # as a game does, even when RunningAppID in the registry is zero.
+        native = self.game_running or self.chord.client_ui
+        if native == self.in_game:
+            return False
+        self.in_game = native
+        self.panel_epoch += 1
+        self.PersonalChanged()
+        if native:
+            self.chord.reset()
+            self.stop_input()
+            self.popup_guard.set_enabled(False)
+        return True
+
     def maintenance(self):
         pid = mapping.steam_pid()
-        was_in_game = self.in_game
         try:
-            self.in_game = bool(pid) and mapping.running_game()
+            self.game_running = bool(pid) and mapping.running_game()
         except OSError:
-            self.in_game = True
-        if self.in_game != was_in_game:
-            self.PersonalChanged()
-        if self.in_game and not was_in_game:
-            self.chord.reset()
+            self.game_running = True
+        self.update_input_owner()
         if self.fd is not None and (pid != self.steam_pid or self.locked):
             if self.watch:
                 GLib.source_remove(self.watch)

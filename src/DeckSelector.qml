@@ -6,6 +6,7 @@ import org.kde.plasma.workspace.dbus as DBus
 QtObject {
     id: selector
     required property Item layout
+    property QtObject gamePanel: null
     property real typingScale: 1
     property Item leftKey: null
     property Item rightKey: null
@@ -26,16 +27,16 @@ QtObject {
     property double lastControllerFrame: 0
     readonly property int eraseButton: 16
 
-    function keyAt(item, x, y) {
+    function keyAt(item, x, y, includeDisabled = false) {
         for (let child of item.children) {
-            if (!child.visible || !child.enabled)
+            if (!child.visible || (!includeDisabled && !child.enabled))
                 continue
             const point = child.mapFromItem(layout, x, y)
             if (!child.contains(point))
                 continue
             if (child.keyType !== undefined)
                 return child.keyType === QtVirtualKeyboard.KeyType.FillerKey ? null : child
-            const nested = keyAt(child, x, y)
+            const nested = keyAt(child, x, y, includeDisabled)
             if (nested)
                 return nested
         }
@@ -78,22 +79,39 @@ QtObject {
             const locales = VirtualKeyboardSettings.activeLocales
             if (locales.length > 1) {
                 const index = locales.indexOf(InputContext.locale)
-                VirtualKeyboardSettings.locale = locales[(index + 1) % locales.length]
+                const next = locales[(index + 1) % locales.length]
+                if (!gamePanel || !gamePanel.requestLocale(next))
+                    VirtualKeyboardSettings.locale = next
                 return
             }
         }
+        if (gamePanel && key.keyType === QtVirtualKeyboard.KeyType.HideKeyboardKey) {
+            gamePanel.dismiss()
+            return
+        }
+        if (gamePanel && key.keyType === QtVirtualKeyboard.KeyType.ShiftKey) {
+            gamePanel.toggleShift()
+            return
+        }
         if (!key.noKeyEvent) {
             const text = key.uppercased ? key.text.toUpperCase() : key.text
-            InputContext.inputEngine.virtualKeyClick(key.key, text,
-                key.uppercased ? Qt.ShiftModifier : Qt.NoModifier)
+            if (gamePanel)
+                gamePanel.key(key.key, text)
+            else
+                InputContext.inputEngine.virtualKeyClick(key.key, text,
+                    key.uppercased ? Qt.ShiftModifier : Qt.NoModifier)
         }
         key.clicked()
     }
 
     function chooseAlternate(key, symbol) {
-        if (key && key.enabled && key.visible && layout.visible)
-            InputContext.inputEngine.virtualKeyClick(key.key, symbol,
-                key.uppercased ? Qt.ShiftModifier : Qt.NoModifier)
+        if (key && key.enabled && key.visible && layout.visible) {
+            if (gamePanel)
+                gamePanel.key(key.key, symbol)
+            else
+                InputContext.inputEngine.virtualKeyClick(key.key, symbol,
+                    key.uppercased ? Qt.ShiftModifier : Qt.NoModifier)
+        }
     }
 
     function cancelHolds() {
@@ -184,6 +202,10 @@ QtObject {
     }
 
     function eraseOnce(owner) {
+        if (gamePanel) {
+            gamePanel.key(Qt.Key_Backspace, "")
+            return true
+        }
         refreshEditor()
         const atStart = atUnselectedStart()
         const surrounding = InputContext.surroundingText
@@ -344,14 +366,18 @@ QtObject {
         const pressureTick = (Number(pressed) >> 2) & selectable
         const hovered = moved & ~held & ~clicked & ~pressureTick
         // Switching language or hiding the panel can unload this layout during activation.
-        if (serial > 0 && (clicked || hovered || pressureTick))
-            DBus.SessionBus.asyncCall({
-                service: "local.deck.PlasmaKeyboard", path: "/Pads",
-                iface: "local.deck.PlasmaKeyboard", member: "Feedback",
-                signature: "(iii)",
-                arguments: [new DBus.int32(serial), new DBus.int32(clicked),
-                            new DBus.int32(hovered | (pressureTick << 2))]
-            })
+        if (serial > 0 && (clicked || hovered || pressureTick)) {
+            const cues = hovered | (pressureTick << 2)
+            if (gamePanel)
+                gamePanel.feedback(Number(serial), clicked, cues)
+            else
+                DBus.SessionBus.asyncCall({
+                    service: "local.deck.PlasmaKeyboard", path: "/Pads",
+                    iface: "local.deck.PlasmaKeyboard", member: "Feedback",
+                    signature: "(iii)",
+                    arguments: [new DBus.int32(serial), new DBus.int32(clicked), new DBus.int32(cues)]
+                })
+        }
         if (clicked & 1) {
             leftFeedback.pulse()
             pressKey(leftKey, 1, leftHold, leftPosition)
@@ -366,12 +392,19 @@ QtObject {
 
     property DBus.SignalWatcher input: DBus.SignalWatcher {
         busType: DBus.BusType.Session
-        service: "local.deck.PlasmaKeyboard"
+        service: selector.gamePanel ? "local.deck.DecktilGaming" : "local.deck.PlasmaKeyboard"
         path: "/Pads"
         iface: "local.deck.PlasmaKeyboard"
-        function dbusCancelRepeat() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
+        function dbusCancelRepeat() {
+            if (!selector.gamePanel) {
+                selector.stopErase()
+                selector.cancelEmptyCheck()
+                selector.cancelHolds()
+            }
+        }
         function dbusFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial) {
-            selector.updateFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial)
+            if (!selector.gamePanel)
+                selector.updateFrame(lx, ly, rx, ry, touches, pressed, held, leftForce, rightForce, serial)
         }
     }
 

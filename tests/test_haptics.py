@@ -102,7 +102,7 @@ class TrackpadHaptics(unittest.TestCase):
         import bridge
 
         adapter = object.__new__(bridge.Bridge)
-        adapter.chord = Mock(stage=None, armed=False)
+        adapter.chord = Mock(stage=None, armed=False, client_ui=False)
         adapter.chord.update.return_value = False
         adapter.erase_serial = None
         adapter.Frame = Mock()

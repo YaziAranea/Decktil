@@ -1,0 +1,17 @@
+[Unit]
+Description=Decktil for fullscreen Steam on the Plasma desktop
+Requisite=deck-plasma-keyboard.service
+After=deck-plasma-keyboard.service
+PartOf=deck-plasma-keyboard.service
+ConditionEnvironment=XDG_SESSION_TYPE=wayland
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -Bs %h/.local/share/decktil-gaming/current/experimental/gaming/session.py --big-picture
+UMask=0077
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+
+[Install]
+WantedBy=deck-plasma-keyboard.service
