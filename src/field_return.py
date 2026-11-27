@@ -1,5 +1,6 @@
 """Reopen a dismissed desktop keyboard when the pointer returns to its browser editor."""
 from configparser import ConfigParser, Error as ConfigError
+from contextlib import contextmanager
 from pathlib import Path
 from secrets import token_hex
 from tempfile import TemporaryDirectory
@@ -42,51 +43,98 @@ def same_browser(pid, owner):
     return identity is not None and flatpak_instance(owner) == identity
 
 
-def focused_field(pid):
-    """Read only the owner, state, role and window-relative bounds of the focused editor."""
-    deadline = time.monotonic() + .85
+@contextmanager
+def accessibility_calls(timeout, only_running=False):
+    deadline = time.monotonic() + timeout
     session = dbus.SessionBus(private=True)
     access = None
     try:
+        if only_running and not session.name_has_owner("org.a11y.Bus"):
+            yield None
+            return
         address = session.call_blocking("org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus",
-                                        "GetAddress", "", (), timeout=.25)
+                                        "GetAddress", "", (), timeout=min(.25, timeout))
         access = dbus.bus.BusConnection(address)
+        if only_running and not access.name_has_owner("org.a11y.atspi.Registry"):
+            yield None
+            return
 
         def call(node, interface, method, signature="", args=()):
             left = deadline - time.monotonic()
             if left <= 0:
                 raise TimeoutError
             return access.call_blocking(*node, interface, method, signature, args, timeout=min(.3, left))
-
-        apps = call(("org.a11y.atspi.Registry", ROOT), ACCESSIBLE, "GetChildren")
-        for app in apps:
-            if not app[0].startswith(":"):
-                continue
-            owner = int(call(("org.freedesktop.DBus", "/org/freedesktop/DBus"), "org.freedesktop.DBus",
-                             "GetConnectionUnixProcessID", "s", (app[0],)))
-            if not same_browser(pid, owner):
-                continue
-            flags = (Atspi.StateType.FOCUSED, Atspi.StateType.EDITABLE, Atspi.StateType.VISIBLE,
-                     Atspi.StateType.SHOWING, Atspi.StateType.SENSITIVE)
-            state = sum(1 << int(flag) for flag in flags)
-            rule = ([state & 0xffffffff, state >> 32], 1, {}, 1, [0, 0, 0, 0], 1, [], 1, False)
-            found = call(app, "org.a11y.atspi.Collection", "GetMatches", "(aiia{ss}iaiiasib)uib",
-                         (rule, 1, 2, True))
-            if len(found) != 1 or found[0][0] != app[0]:
-                continue
-            entry = found[0]
-            role = int(call(entry, ACCESSIBLE, "GetRole"))
-            if role not in (Atspi.Role.ENTRY, Atspi.Role.TEXT):
-                continue
-            rect = tuple(map(int, call(entry, "org.a11y.atspi.Component", "GetExtents",
-                                       "u", (int(Atspi.CoordType.WINDOW),))))
-            if rect[2] > 0 and rect[3] > 0:
-                return tuple(entry), rect
-        return None
+        yield call
     finally:
         if access is not None:
             access.close()
         session.close()
+
+
+def focused_entry(call, pid):
+    """Find one visible, editable text field owned by this window's application."""
+    flags = (Atspi.StateType.FOCUSED, Atspi.StateType.EDITABLE, Atspi.StateType.VISIBLE,
+             Atspi.StateType.SHOWING, Atspi.StateType.SENSITIVE)
+    state = sum(1 << int(flag) for flag in flags)
+    rule = ([state & 0xffffffff, state >> 32], 1, {}, 1, [0, 0, 0, 0], 1, [], 1, False)
+    apps = call(("org.a11y.atspi.Registry", ROOT), ACCESSIBLE, "GetChildren")
+    field = None
+    for app in apps:
+        if not app[0].startswith(":"):
+            continue
+        owner = int(call(("org.freedesktop.DBus", "/org/freedesktop/DBus"), "org.freedesktop.DBus",
+                         "GetConnectionUnixProcessID", "s", (app[0],)))
+        if not same_browser(pid, owner):
+            continue
+        found = call(app, "org.a11y.atspi.Collection", "GetMatches", "(aiia{ss}iaiiasib)uib",
+                     (rule, 1, 2, True))
+        if not found:
+            continue
+        if field is not None or len(found) != 1 or found[0][0] != app[0]:
+            raise ValueError("Ambiguous focused field")
+        field = tuple(found[0])
+        if int(call(field, ACCESSIBLE, "GetRole")) not in (Atspi.Role.ENTRY, Atspi.Role.TEXT):
+            raise ValueError("Unsupported focused field")
+    return field
+
+
+def focused_field(pid):
+    """Read only the owner, state, role and window-relative bounds of the focused editor."""
+    with accessibility_calls(.85) as call:
+        entry = focused_entry(call, pid)
+        if entry is not None:
+            rect = tuple(map(int, call(entry, "org.a11y.atspi.Component", "GetExtents",
+                                       "u", (int(Atspi.CoordType.WINDOW),))))
+            if rect[2] > 0 and rect[3] > 0:
+                return entry, rect
+    return None
+
+
+def focused_editor_empty(pid, codex_marker):
+    """Check character count without fetching the user's text or moving the caret."""
+    with accessibility_calls(.28, only_running=True) as call:
+        entry = focused_entry(call, pid) if call is not None else None
+        if entry is None:
+            # Codex reports one trailing paragraph marker in an empty composer,
+            # even when the accessibility tree has not been enabled.
+            return codex_marker
+        count = int(call(entry, "org.freedesktop.DBus.Properties", "Get", "ss",
+                         ("org.a11y.atspi.Text", "CharacterCount")))
+        return (count == 0 or (count == 1 and codex_marker)) and focused_entry(call, pid) == entry
+
+
+def check_empty_async(pid, codex_marker, done):
+    def lookup():
+        try:
+            empty = focused_editor_empty(pid, codex_marker)
+        except (dbus.DBusException, OSError):
+            # An unavailable accessibility peer supplies no independent evidence.
+            # The marker argument is already bound to a KWin-identified Codex window.
+            empty = codex_marker
+        except (ValueError, TypeError, IndexError):
+            empty = False
+        GLib.idle_add(done, empty)
+    Thread(target=lookup, daemon=True).start()
 
 
 class BrowserFieldReturn(dbus.service.Object):

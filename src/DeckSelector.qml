@@ -21,8 +21,7 @@ QtObject {
     property int emptyCheckSerial: 0
     property double emptyCheckDeadline: 0
     property double confirmEmptyAfter: 0
-    property bool probingToEnd: false
-    property double caretCheckAt: 0
+    property int emptyCheckGeneration: 0
     property var emptyCheckInputItem: null
     property double lastControllerFrame: 0
     readonly property int eraseButton: 16
@@ -147,35 +146,50 @@ QtObject {
         emptyCheckTimer.stop()
         emptyCheckSerial = 0
         emptyCheckInputItem = null
-        caretCheckAt = 0
-        probingToEnd = false
+        ++emptyCheckGeneration
     }
 
     function watchForEmpty(serial, initiallyEmpty) {
+        cancelEmptyCheck()
         const now = Date.now()
         emptyCheckSerial = serial
         emptyCheckInputItem = InputContext.inputItem
-        emptyCheckDeadline = now + 365
-        confirmEmptyAfter = initiallyEmpty ? now + 100 : 0
-        caretCheckAt = 0
-        probingToEnd = false
+        emptyCheckDeadline = now + 360
+        confirmEmptyAfter = initiallyEmpty ? now + 65 : 0
         emptyCheckTimer.restart()
     }
 
-    function checkReachable(key, reverse) {
-        // Queue the return with the probe. A subsequent key from the Deck
-        // must always reach the editor with the caret at its original start.
-        InputContext.inputEngine.virtualKeyClick(key, "", Qt.NoModifier)
-        InputContext.inputEngine.virtualKeyClick(reverse, "", Qt.NoModifier)
+    function finishEmptyCheck(serial) {
+        cancelEmptyCheck()
+        stopErase()
+        requestClose(serial)
     }
 
-    function observeProbe() {
-        if (!caretCheckAt || !layout.visible || emptyCheckInputItem !== InputContext.inputItem)
-            return
-        const text = InputContext.surroundingText
-        // Qt can report surrounding text relative to the new paragraph.
-        if (InputContext.cursorPosition > 0 || (confirmEmptyAfter && text.length && text !== "\n"))
-            cancelEmptyCheck()
+    function confirmEmpty(serial, paragraphMarker) {
+        const generation = emptyCheckGeneration
+        emptyCheckTimer.stop()
+        if (paragraphMarker)
+            stopErase() // Holding X at the start must not send another Backspace.
+        DBus.SessionBus.asyncCall({
+            service: "local.deck.PlasmaKeyboard", path: "/Pads",
+            iface: "local.deck.PlasmaKeyboard", member: "ConfirmEmpty",
+            signature: "(ib)", arguments: [new DBus.int32(serial), new DBus.bool(paragraphMarker)]
+        }, reply => {
+            if (generation !== emptyCheckGeneration || serial !== emptyCheckSerial)
+                return
+            refreshEditor()
+            const text = InputContext.surroundingText
+            if ((reply.value.value ?? reply.value) === true && layout.visible
+                    && emptyCheckInputItem === InputContext.inputItem && atUnselectedStart()
+                    && text === (paragraphMarker ? "\n" : "")) {
+                finishEmptyCheck(serial)
+            } else {
+                cancelEmptyCheck()
+            }
+        }, () => {
+            if (generation === emptyCheckGeneration)
+                cancelEmptyCheck()
+        })
     }
 
     function refreshEditor() {
@@ -269,52 +283,24 @@ QtObject {
             }
             selector.refreshEditor()
             const text = InputContext.surroundingText
-            const pos = InputContext.cursorPosition
-            const reachedNextParagraph = selector.confirmEmptyAfter && !selector.probingToEnd
-                    && text.length && text !== "\n"
-            if (selector.caretCheckAt && (pos > 0 || reachedNextParagraph) && pos === InputContext.anchorPosition
-                    && !InputContext.selectedText.length && !InputContext.preeditText.length
-                    && !(InputContext.inputMethodHints & (Qt.ImhHiddenText | Qt.ImhSensitiveData))) {
-                selector.cancelEmptyCheck()
-            } else if (!selector.atUnselectedStart() || (text !== "" && text !== "\n")) {
-                // The editor may still be reporting the state before Backspace.
-                // A later poll can see its reply even after a quick tap.
-                if (selector.caretCheckAt)
-                    selector.cancelEmptyCheck()
-            } else if (!text.length && selector.confirmEmptyAfter && !selector.caretCheckAt) {
-                // Cold Qt fields can initially report zero length. Backspace
-                // at their actual start is a no-op and sends no new snapshot.
-                if (now >= selector.confirmEmptyAfter) {
-                    selector.probingToEnd = true
-                    selector.caretCheckAt = now + 85
-                    selector.checkReachable(Qt.Key_End, Qt.Key_Home)
-                }
-            } else if (selector.probingToEnd && now >= selector.caretCheckAt) {
-                // End also stays put on an empty first line of a multiline
-                // field. Down distinguishes it from a genuinely empty editor.
-                selector.probingToEnd = false
-                selector.caretCheckAt = now + 90
-                selector.checkReachable(Qt.Key_Down, Qt.Key_Up)
-            } else if ((!text.length && !selector.caretCheckAt)
-                    || (!selector.probingToEnd && selector.caretCheckAt && now >= selector.caretCheckAt)) {
-                const serial = selector.emptyCheckSerial
-                selector.cancelEmptyCheck()
-                selector.stopErase()
-                if (serial > 0)
-                    selector.requestClose(serial)
-            } else if (text === "\n" && !selector.caretCheckAt) {
-                // ProseMirror preserves its trailing <br> after Backspace.
-                // Down can reach a real next line, but not that decoration.
-                // Avoid Right, which can accept an inline completion in Codex.
-                selector.caretCheckAt = now + 115
-                selector.checkReachable(Qt.Key_Down, Qt.Key_Up)
+            if (!selector.atUnselectedStart() || (text !== "" && text !== "\n"))
+                return
+            if (now < selector.confirmEmptyAfter)
+                return
+            const serial = selector.emptyCheckSerial
+            if (!text.length && !selector.confirmEmptyAfter) {
+                // A known nonempty field reported empty after our Backspace.
+                selector.finishEmptyCheck(serial)
+            } else {
+                // A cold Qt field can report "" with text still present.
+                // ProseMirror reports "\n" for an empty paragraph. Ask without
+                // sending navigation keys, which a chat can interpret as history.
+                selector.confirmEmpty(serial, text === "\n")
             }
         }
     }
     property Connections editorFocus: Connections {
         target: InputContext
-        function onSurroundingTextChanged() { selector.observeProbe() }
-        function onCursorPositionChanged() { selector.observeProbe() }
         function onInputItemChanged() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
         function onLocaleChanged() { selector.stopErase(); selector.cancelEmptyCheck(); selector.cancelHolds() }
     }

@@ -1,4 +1,5 @@
 """Cover delayed desktop accessibility replies and the KWin pointer observer."""
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,60 @@ class FieldReturnTests(unittest.TestCase):
         self.observer.bus.get_name_owner.return_value = ":1.2"
         self.observer.reopen = Mock(return_value=True)
         self.idle = self.enterContext(patch.object(field_return.GLib, "idle_add"))
+
+    def test_empty_check_reads_only_owner_and_count_and_rejects_passwords(self):
+        app, other, entry = (":1.3", "/app"), (":1.4", "/other"), (":1.3", "/edit")
+        counts = []
+        role = field_return.Atspi.Role.ENTRY
+        found = [entry]
+
+        def call(node, interface, method, signature="", args=()):
+            if node[0] == "org.a11y.atspi.Registry":
+                return [other, app]
+            if method == "GetConnectionUnixProcessID":
+                return {":1.3": 15, ":1.4": 4538125}[args[0]]
+            if node == app and method == "GetMatches":
+                flags = args[0][0][0] | (args[0][0][1] << 32)
+                for flag in ("FOCUSED", "EDITABLE", "VISIBLE", "SHOWING", "SENSITIVE"):
+                    self.assertTrue(flags & (1 << int(getattr(field_return.Atspi.StateType, flag))))
+                return found
+            if node == entry and method == "GetRole":
+                return role
+            if node == entry and method == "Get":
+                self.assertEqual(args, ("org.a11y.atspi.Text", "CharacterCount"))
+                counts.append(1)
+                return count
+            self.fail((node, interface, method))
+
+        with patch.object(field_return, "accessibility_calls", side_effect=lambda *a, **kw: nullcontext(call)):
+            count = 0
+            self.assertTrue(field_return.focused_editor_empty(15, False))
+            count = 1
+            self.assertFalse(field_return.focused_editor_empty(15, False))
+            self.assertTrue(field_return.focused_editor_empty(15, True))
+            count = 2
+            self.assertFalse(field_return.focused_editor_empty(15, True))
+            role = field_return.Atspi.Role.PASSWORD_TEXT
+            with self.assertRaises(ValueError):
+                field_return.focused_editor_empty(15, True)
+            found.clear()
+            self.assertFalse(field_return.focused_editor_empty(15, False))
+            self.assertTrue(field_return.focused_editor_empty(15, True))
+        self.assertEqual(len(counts), 4)
+        with patch.object(field_return, "accessibility_calls", return_value=nullcontext(None)):
+            self.assertFalse(field_return.focused_editor_empty(15, False))
+            self.assertTrue(field_return.focused_editor_empty(15, True))
+
+    def test_codex_marker_fallback_applies_only_to_missing_accessibility(self):
+        finished = Mock()
+        with patch.object(field_return, "Thread") as worker:
+            for error, marker, expected in ((field_return.dbus.DBusException(), True, True),
+                                            (TimeoutError(), False, False),
+                                            (ValueError(), True, False)):
+                with patch.object(field_return, "focused_editor_empty", side_effect=error):
+                    field_return.check_empty_async(15, marker, finished)
+                    worker.call_args.kwargs["target"]()
+                    self.idle.assert_called_with(finished, expected)
 
     def test_previous_dismissal_cannot_arm_open_or_end_the_current_one(self):
         observer = self.observer

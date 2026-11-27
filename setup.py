@@ -637,9 +637,14 @@ def runtime_changes(state):
 # pre-release build that preceded the final KWin script lifecycle fix.
 MANUAL_BASELINES = {
     "bridge.py": {"ae15a10f82cb2bc43100fee0ceea2dc840225293b5a3a09fcfe25cb77baeaa76",
-                  "929c810fc4d5d9783f1a84b601a78b79b51ff5ec39038608cee5021d0f696966"},
+                  "929c810fc4d5d9783f1a84b601a78b79b51ff5ec39038608cee5021d0f696966",
+                  "0011fb687fd360bdd33ad6ad0790889befceeba21af8ab7df7c837bb9ed059c6"},
     "chord.py": {"15faef7fe5a065b4258474d7ffd13dc65985f622533bff9e50a1f8268c4f9e71"},
-    "field_return.py": {None, "0728de06b9c7d127ae395c4d8e51220965394ee8c466c97cf7a15822a39b4481"},
+    "field_return.py": {None, "0728de06b9c7d127ae395c4d8e51220965394ee8c466c97cf7a15822a39b4481",
+                        "46d2500e5df212bbf17ed802b8b60a28db13e9af0774bfdb7ebcb9281fa5a759"},
+    "DeckSelector.qml": {"2c17cc46eff4b3dca06c7eae1ef9b9a173014ec2fc88a0ca60ae2a0f8e1dca80",
+                         "b346b30d5b11a91aac0284b6d52c3eea1ce90ab3caba1ac51d382f19e7f8e241"},
+    "suppress-steam-osk.js": {"3c89b9d680714acdba78c18262b20fbfcf78a83de2fb5a9eba72aacf4ad819b2"},
     "browser-field-return.js": {None, "356ada906b29bdf16ab48322eec199815785c85841fb923bd01b965b6f004140"},
     "keyboard.py": {"a64b79391cb01087bb28b4d61021a93626df0095e0f409552fadad59d1751eb6",
                     "2ce8338d3cb04a6e2ed5f63d7b62dcfd09ab00d45e28d798e16cb3e59ad43436"},

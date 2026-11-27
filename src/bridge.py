@@ -19,7 +19,7 @@ from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib, GLibUnix
 
 from chord import SteamChord
-from field_return import BrowserFieldReturn
+from field_return import BrowserFieldReturn, check_empty_async
 from haptics import TrackpadFeedback
 from popup import SteamPopupGuard
 import personal
@@ -87,6 +87,7 @@ class Bridge(dbus.service.Object):
         self.chord = SteamChord(bus)
         self.field_return = BrowserFieldReturn(bus, self.reopen_browser_field)
         self.popup_guard = SteamPopupGuard(bus)
+        self.focus_window = None
         self.props = self.chord.properties
         self.fd = None
         self.steam_pid = None
@@ -169,15 +170,39 @@ class Bridge(dbus.service.Object):
                 pass
         return []
 
+    def current_erase(self, serial):
+        now = time.monotonic()
+        return (self.erase_serial == int(serial) and self.visible and not self.locked and not self.in_game
+                and now <= self.erase_release_deadline and self.recovery_editor()
+                and (self.can_route() or (now < self.desktop_erase_until and self.acquiring_from_desktop())))
+
+    @dbus.service.method(INTERFACE, in_signature="sib", out_signature="", sender_keyword="sender")
+    def FocusWindow(self, window_id, pid, codex, sender=None):
+        if sender != self.popup_guard.bus.get_name_owner("org.kde.KWin"):
+            return
+        window = (str(window_id), int(pid), bool(codex)) if window_id and pid > 0 else None
+        if self.focus_window != window:
+            self.focus_window = window
+            self.cancel_erase()
+
+    @dbus.service.method(INTERFACE, in_signature="ib", out_signature="b", async_callbacks=("reply", "error"))
+    def ConfirmEmpty(self, serial, paragraph_marker, reply, error):
+        window = self.focus_window
+        if not window or not self.popup_guard.active or not self.current_erase(serial):
+            reply(False)
+            return
+        epoch = self.panel_epoch
+
+        def finish(empty):
+            reply(bool(empty and self.popup_guard.active and window == self.focus_window
+                       and epoch == self.panel_epoch and self.current_erase(serial)))
+            return False
+
+        check_empty_async(window[1], bool(window[2] and paragraph_marker), finish)
+
     @dbus.service.method(INTERFACE, in_signature="i", out_signature="")
     def CloseOnEmpty(self, serial):
-        # The layout sees the editor's surrounding/selected/preedit text. The
-        # bridge owns KWin activation and can authenticate the current X edge.
-        now = time.monotonic()
-        if (self.erase_serial != int(serial) or not self.visible or self.locked or self.in_game
-                or now > self.erase_release_deadline or not self.recovery_editor()):
-            return
-        if not self.can_route() and not (now < self.desktop_erase_until and self.acquiring_from_desktop()):
+        if not self.current_erase(serial):
             return
         self.erase_serial = None
         self.chord._request(False)

@@ -28,3 +28,14 @@ function watch(window) {
 
 workspace.windowAdded.connect(watch);
 workspace.windowList().forEach(watch);
+
+// The empty-field check needs only the focused window's identity. Codex
+// represents an empty composer as a single trailing paragraph marker.
+function focusWindow(w) {
+    const app = w ? String(w.resourceClass).toLowerCase() : "";
+    const codex = app === "chatgpt" || app === "codex";
+    callDBus("local.deck.PlasmaKeyboard", "/Pads", "local.deck.PlasmaKeyboard", "FocusWindow",
+             w ? String(w.internalId) : "", w ? Number(w.pid) : 0, codex);
+}
+workspace.windowActivated.connect(focusWindow);
+focusWindow(workspace.activeWindow);

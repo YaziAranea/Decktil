@@ -306,6 +306,44 @@ class DesktopOskHandoff(unittest.TestCase):
         a.Frame.assert_not_called()
         self.assertIsNone(a.erase_serial)
 
+    def test_accessibility_confirmation_expires_with_erase_or_panel(self):
+        a = self.adapter
+        a.panel_epoch = 2
+        a.focus_window = ("win-a", 27, True)
+        a.popup_guard = Mock(active=True)
+        a.popup_guard.bus.get_name_owner.return_value = ":1.10"
+        a.erase_serial = 17
+        a.erase_release_deadline = float("inf")
+        reply = Mock()
+        with patch.object(bridge, "check_empty_async") as lookup:
+            a.ConfirmEmpty(17, True, reply, Mock())
+            self.assertEqual(lookup.call_args.args[:2], (27, True))
+            finish = lookup.call_args.args[2]
+            finish(True)
+            reply.assert_called_once_with(True)
+            a.panel_epoch += 1
+            finish(True)
+            reply.assert_called_with(False)
+            a.panel_epoch -= 1
+            a.erase_serial += 1
+            finish(True)
+            reply.assert_called_with(False)
+            a.ConfirmEmpty(17, True, reply, Mock())
+            lookup.assert_called_once()
+
+    def test_window_change_authenticates_kwin_and_invalidates_old_press(self):
+        a = self.adapter
+        a.focus_window = ("one", 32, True)
+        a.erase_serial = 18
+        a.popup_guard = Mock()
+        a.popup_guard.bus.get_name_owner.return_value = ":1.10"
+        a.FocusWindow("two", 93, False, sender=":1.0")
+        self.assertEqual(a.focus_window, ("one", 32, True))
+        self.assertEqual(a.erase_serial, 18)
+        a.FocusWindow("two", 32, False, sender=":1.10")
+        self.assertEqual(a.focus_window, ("two", 32, False))
+        self.assertIsNone(a.erase_serial)
+
     def test_empty_close_stays_with_current_editor_and_recent_x(self):
         a = self.adapter
         a.erase_serial = 17
