@@ -93,16 +93,29 @@ class ManualUpgrade(unittest.TestCase):
         self.enterContext(patch.object(setup, "OLD_PROFILE_BLOCK", setup.digest(block)))
         self.profile = self.app / "profile.py"
         self.profile.write_bytes(b"KEYBOARD = 0x90000002\n" + block + b"def watch_refresh():\n    pass\n")
-        (self.app / "keyboard.py").write_text("# user-local keyboard\n")
+        for name in setup.MANUAL_BASELINES:
+            if name not in ("bridge.py", "chord.py", "field_return.py", "browser-field-return.js"):
+                path = self.app / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((setup.PACKAGE / "src" / name).read_bytes())
+        self.enterContext(patch.dict(setup.MANUAL_BASELINES, {"keyboard.py": {setup.digest(old)}}))
+        (self.app / "keyboard.py").write_bytes(old)
 
     def test_upgrades_only_verified_files_preserving_local_profile_and_settings(self):
         updates = setup.manual_runtime_updates()
-        self.assertEqual(set(updates), {"bridge.py", "chord.py", "profile.py", "field_return.py", "browser-field-return.js"})
+        self.assertEqual(set(updates), {"bridge.py", "chord.py", "profile.py", "field_return.py", "browser-field-return.js", "keyboard.py"})
         for name, (_, data) in updates.items():
             (self.app / name).write_bytes(data)
         self.assertIn(b"KEYBOARD = 0x90000002", self.profile.read_bytes())
-        self.assertEqual((self.app / "keyboard.py").read_text(), "# user-local keyboard\n")
+        self.assertEqual((self.app / "keyboard.py").read_bytes(), (setup.PACKAGE / "src/keyboard.py").read_bytes())
         self.assertEqual(setup.manual_runtime_updates(), {})
+
+    def test_changed_manual_keyboard_is_preserved(self):
+        launcher = self.app / "keyboard.py"
+        launcher.write_bytes(b"# user-local keyboard\n")
+        with self.assertRaisesRegex(RuntimeError, "modified file"):
+            setup.manual_runtime_updates()
+        self.assertEqual(launcher.read_bytes(), b"# user-local keyboard\n")
 
     def test_foreign_changed_feature_file_stops_before_any_write(self):
         bridge = self.app / "bridge.py"

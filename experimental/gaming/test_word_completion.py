@@ -31,6 +31,21 @@ class WordCompletionTests(unittest.TestCase):
         self.event('suggestion', revision=self.pilot.words.revision, prefix='', word='суп')
         self.assertEqual(self.output.received[-1], 'суп ')
 
+    def test_one_letter_of_second_word_then_immediate_next_suggestion(self):
+        for first, second, following in [('спасибо', 'тебе', 'за'), ('thank', 'you', 'for')]:
+            with self.subTest(first=first):
+                self.event('resetPrediction')
+                self.output.received.clear()
+                self.event('text', text=first)
+                self.event('text', text=' ')
+                self.assertEqual(self.messages[-1]['text'], first + ' ')
+                self.event('text', text=second[0])
+                self.event('suggestion', revision=self.pilot.words.revision, prefix=second[0], word=second)
+                self.assertEqual(self.messages[-1]['text'], first + ' ' + second + ' ')
+                self.event('suggestion', revision=self.pilot.words.revision, prefix='', word=following)
+                self.assertEqual(self.output.received,
+                                 [first, ' ', second[0], second[1:] + ' ', following + ' '])
+
     def test_focus_change_and_locale_reset_invalidate_old_candidates(self):
         self.event('text', text='hel')
         pick = dict(prefix='hel', word='hello', revision=self.pilot.words.revision)

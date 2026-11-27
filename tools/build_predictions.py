@@ -25,7 +25,6 @@ WORD = {
 # Keep foreign tokens and punctuation visible so they interrupt the context.
 TOKENS = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)*|[^\s]", re.UNICODE)
 SEED_WEIGHT = 18
-CONTEXT_LIMIT = {1: 8000, 2: 16500}
 CANDIDATES = 5
 
 
@@ -56,44 +55,117 @@ def write_gzip(path, data):
             output.write(data.encode("utf-8"))
 
 
+def count_sentences(sentences, lang):
+    counts = Counter()
+    context_documents = Counter()
+    seen = set()
+    for sentence in sentences:
+        if sentence in seen:
+            continue
+        seen.add(sentence)
+        edges = set(transitions(sentence, lang))
+        counts.update(edges)
+        context_documents.update({context for context, word in edges})
+    return counts, context_documents
+
+
+def rare_continuations(counts, context_documents):
+    # Allow a single attested phrase to fill a context with no recurring
+    # continuation. Both adjacent pairs of a three-word phrase must recur.
+    following = Counter()
+    recurring_contexts = set()
+    for (context, word), count in counts.items():
+        if " " not in context:
+            following[word] += count
+        if count >= 2:
+            recurring_contexts.add(context)
+    candidates = defaultdict(dict)
+    for context, word in counts:
+        if context in recurring_contexts or context_documents[context] < 2:
+            continue
+        if " " in context:
+            left, middle = context.split()
+            if counts[left, middle] < 2 or counts[middle, word] < 2:
+                continue
+            support = counts[middle, word]
+        else:
+            support = following[word]
+            if support < 8:
+                continue
+        candidates[context][word] = support
+    return {(context, word): words[word]
+            for context, words in candidates.items()
+            for word in sorted(words, key=lambda w: (-words[w], w))[:CANDIDATES]}
+
+
 def count_export(lang, archive):
     iso, checksum = SOURCES[lang]
     if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
         raise ValueError(f"{archive.name} is not the documented CC0 snapshot")
-    counts = Counter()
-    seen = set()
-    with bz2.open(archive, "rt", encoding="utf-8") as sentences:
-        for row in sentences:
+
+    def sentences(rows):
+        for row in rows:
             _, language, sentence, _ = row.rstrip("\n").split("\t", 3)
             if language != iso:
                 raise ValueError(f"Unexpected language in {archive.name}")
-            if sentence not in seen:
-                seen.add(sentence)
-                counts.update(set(transitions(sentence, lang)))
-    # Keep only independently recurring sequences. No sentence or attribution
-    # fields are written to the intermediate snapshot or shipped model.
+            yield sentence
+
+    with bz2.open(archive, "rt", encoding="utf-8") as rows:
+        counts, documents = count_sentences(sentences(rows), lang)
+    recurring = {edge: n for edge, n in counts.items() if n >= 2}
+    return recurring, rare_continuations(counts, documents)
+
+
+def snapshot_text(counts):
     return "".join(f"{context}\t{word}\t{count}\n"
-                   for (context, word), count in sorted(counts.items()) if count >= 2)
+                   for (context, word), count in sorted(counts.items()))
+
+
+def read_counts(path):
+    table = defaultdict(Counter)
+    with gzip.open(path, "rt", encoding="utf-8") as rows:
+        for row in rows:
+            context, word, count = row.rstrip("\n").split("\t")
+            table[context][word] = int(count)
+    return table
+
+
+def suffix_model(counts):
+    # One vote per different predecessor spelling, independent of frequency.
+    votes = defaultdict(Counter)
+    contexts = Counter()
+    for previous, followers in counts.items():
+        if not previous.isalpha():
+            continue
+        for size in range(2, min(5, len(previous))):
+            suffix = previous[-size:]
+            contexts[suffix] += 1
+            votes[suffix].update(followers.keys())
+    table = {}
+    for suffix, followers in sorted(votes.items()):
+        if contexts[suffix] < (6 if len(suffix) == 2 else 4):
+            continue
+        words = [word for word, count in followers.items() if count >= 3]
+        if words:
+            table[suffix] = sorted(words, key=lambda w: (-followers[w], w))[:CANDIDATES]
+    return table
 
 
 def rank_model(lang, training):
-    counts = defaultdict(Counter)
-    with gzip.open(training / f"{lang}-counts.tsv.gz", "rt", encoding="utf-8") as rows:
-        for row in rows:
-            context, word, count = row.rstrip("\n").split("\t")
-            counts[context][word] = int(count)
+    counts = read_counts(training / f"{lang}-counts.tsv.gz")
+    suffix = suffix_model(counts)
     for sentence in (training / f"{lang}-chat.txt").read_text(encoding="utf-8").splitlines():
         for context, word in set(transitions(sentence, lang)):
             counts[context][word] += SEED_WEIGHT
-    result = {"format": 1}
-    for size, name in ((1, "bigram"), (2, "trigram")):
-        eligible = [context for context in counts if len(context.split()) == size]
-        eligible.sort(key=lambda context: (-sum(counts[context].values()), context))
-        table = {}
-        for context in sorted(eligible[:CONTEXT_LIMIT[size]]):
-            words = sorted(counts[context], key=lambda w: (-counts[context][w], w))
-            table[context] = words[:CANDIDATES]
-        result[name] = table
+    # Project examples and independently recurring transitions always take
+    # precedence. Weak evidence only supplies previously uncovered contexts.
+    for context, words in read_counts(training / f"{lang}-backoff.tsv.gz").items():
+        if context not in counts:
+            counts[context] = words
+    result = {"format": 1, "bigram": {}, "trigram": {}, "suffix": suffix}
+    for context, followers in sorted(counts.items()):
+        name = "trigram" if " " in context else "bigram"
+        result[name][context] = sorted(followers, key=lambda w: (-followers[w], w))[:CANDIDATES]
     return result
 
 
@@ -108,13 +180,15 @@ def main():
     for lang, (iso, _) in SOURCES.items():
         if args.from_exports:
             archive = args.from_exports / f"{iso}_sentences_CC0.tsv.bz2"
-            snapshot = count_export(lang, archive)
-            write_gzip(args.training_dir / f"{lang}-counts.tsv.gz", snapshot)
+            recurring, rare = count_export(lang, archive)
+            write_gzip(args.training_dir / f"{lang}-counts.tsv.gz", snapshot_text(recurring))
+            write_gzip(args.training_dir / f"{lang}-backoff.tsv.gz", snapshot_text(rare))
         model = rank_model(lang, args.training_dir)
         target = args.output_dir / f"{lang}-next.json.gz"
         write_gzip(target, json.dumps(model, ensure_ascii=False, separators=(",", ":")))
         print(f"{lang}: {len(model['bigram'])} one-word and "
-              f"{len(model['trigram'])} two-word contexts, {target.stat().st_size} bytes")
+              f"{len(model['trigram'])} two-word contexts, {len(model['suffix'])} endings, "
+              f"{target.stat().st_size} bytes")
 
 
 if __name__ == "__main__":

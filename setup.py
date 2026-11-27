@@ -66,6 +66,18 @@ def set_method(value):
     set_kwin_setting("InputMethod", value)
 
 
+def reload_input_method():
+    # Wait for KWin to unregister the previous input method before reselecting
+    # the same desktop entry. Otherwise it can coalesce both settings changes.
+    set_method(None)
+    try:
+        deadline = time.monotonic() + 3
+        while panel_state()["available"] and time.monotonic() < deadline:
+            time.sleep(.05)
+    finally:
+        set_method(str(ENTRY))
+
+
 def save(path, data, mode=0o600):
     path.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent,delete=False) as file:
@@ -506,7 +518,8 @@ def restore_snapshot(previous):
 
 
 def verify_settings(expected, available=False):
-    until = time.monotonic() + 3
+    # Cold start also builds the completion and morphology indexes on the Deck.
+    until = time.monotonic() + (12 if available else 3)
     while True:
         actual = snapshot()
         panel = panel_state()
@@ -617,7 +630,7 @@ def runtime_changes(state):
     return changes
 
 
-# Only these v0.4.0 desktop files changed for the B/field-return feature.
+# Known desktop files from released versions and the original manual Deck install.
 # Early manual installs carried their own shortcut ID and layout discovery in
 # profile.py. Replace only its verified controller-template functions.
 # The second bridge hash and the two field-return hashes identify the tested
@@ -628,6 +641,17 @@ MANUAL_BASELINES = {
     "chord.py": {"15faef7fe5a065b4258474d7ffd13dc65985f622533bff9e50a1f8268c4f9e71"},
     "field_return.py": {None, "0728de06b9c7d127ae395c4d8e51220965394ee8c466c97cf7a15822a39b4481"},
     "browser-field-return.js": {None, "356ada906b29bdf16ab48322eec199815785c85841fb923bd01b965b6f004140"},
+    "keyboard.py": {"a64b79391cb01087bb28b4d61021a93626df0095e0f409552fadad59d1751eb6",
+                    "2ce8338d3cb04a6e2ed5f63d7b62dcfd09ab00d45e28d798e16cb3e59ad43436"},
+    "DeckWordRow.qml": {"9e563f18f543511c7fa27a2b58adc853b0d95c6b4a6982bea074d7265feb6500"},
+    "DeckPrediction.js": {"53c5d3dba00cb4413a77d21042594454aadb2222662b2e636c1f2f3e9902532b"},
+    "DeckGrammar.js": {"2fef46924fecb49554a65be796d4641674bf3b97237132935f4ea3d7f4d4d6a3"},
+    "words/ru.txt.gz": {"1f6cfe3e8229c1b29b194213a98ce497ca080196d5506c73e57bbd2d6a224f01"},
+    "words/en.txt.gz": {"4c0c37286facd70c3f0a3bb365873e8aee1ecb970a799d267a2a5ad5e7410d06"},
+    "words/ru-next.json.gz": {"ae2b47d5ba9ad3e77e11249ab660ca75f9f0f2fc16bb46edb7e94b8de20c6eaa"},
+    "words/en-next.json.gz": {"14c5749889c6e0226ca009612b924671579e817efc039da990fde24abf2abda5"},
+    "words/ru-morph.json.gz": {"9085e5b72744e16a4dd1d381dc9547aa154dd6406099835b4d4d4c2b089cd96c"},
+    "words/NOTICE.md": {"d8f89bc39fa0a051ab13fe7b1d463c7ad69da97bec1097dc38171baaf740adb6"},
 }
 OLD_PROFILE_BLOCK = "27441fbd2a7e9d4397b9d1107ba6dc43f059fb967d7daf11b446209cac6ed00b"
 
@@ -636,7 +660,7 @@ def manual_runtime_updates():
     updates = {}
     for name in (*MANUAL_BASELINES, "profile.py"):
         path = APP / name
-        if path.is_symlink() or (path.exists() and not path.is_file()):
+        if path.parent.is_symlink() or path.is_symlink() or (path.exists() and not path.is_file()):
             raise RuntimeError(f"Manual installation contains a modified file: {path}")
         current = path.read_bytes() if path.is_file() else None
         wanted = (PACKAGE / "src" / name).read_bytes()
@@ -682,6 +706,8 @@ def restore_all(fullscreen, pending):
     if pending.get("desktop") is not None:
         restore_snapshot(pending["desktop"])
         if pending.get("changes") and pending["desktop"]["active"]:
+            if pending.get("reload_method") and pending["desktop"]["method"] == str(ENTRY):
+                reload_input_method()
             cmd("systemctl", "--user", "restart", UNIT_NAME)
     if pending["fullscreen"] and pending.get("fullscreen_touched"):
         fullscreen.restore(UNIT.parent, pending["fullscreen"])
@@ -726,6 +752,8 @@ def switch_all(state, choice, *, uninstall=False):
                    "mode": load_mode(), "manifest": load_manifest() if MANIFEST.exists() else None,
                    "changes": changes, "fullscreen_touched": False,
                    "manual_written": {name: digest(new) for name, (_, new) in manual.items()}}
+        pending["reload_method"] = bool(changes) and (not manual or any(
+            name == "keyboard.py" or name.startswith(("Deck", "words/")) for name in manual))
         backed_up = list(changes)
         if choice == "plasma" and kind == "managed" and not state.get("enabled"):
             # enable() creates or refreshes the helper AppID before checking Steam.
@@ -765,9 +793,8 @@ def switch_all(state, choice, *, uninstall=False):
             if choice == "plasma":
                 if changes and pending["desktop"]["active"]:
                     # Reload the updated desktop bridge and let KWin relaunch its input method.
-                    if not manual:
-                        set_method(None)
-                        set_method(str(ENTRY))
+                    if pending["reload_method"]:
+                        reload_input_method()
                     cmd("systemctl", "--user", "restart", UNIT_NAME)
                     check = snapshot()
                     if effective_mode(check) != "plasma":

@@ -20,7 +20,10 @@ class CompletionDataTests(unittest.TestCase):
                 with gzip.open(WORDS / f"{lang}.txt.gz", "rt", encoding="utf-8") as source:
                     words = source.read().splitlines()
                 entries = set(words)
-                self.assertGreater(len(entries), 100_000)
+                self.assertGreaterEqual(len(entries), 130_000)
+                additions = {"ru": {"автовокзале", "накопитель", "автозаполнение", "ыканье"},
+                             "en": {"customizing", "multiplier", "autosaving", "keycaps"}}
+                self.assertTrue(additions[lang] <= entries)
                 self.assertEqual(len(entries), len(words))
                 slang = (WORDS / "training" / f"{lang}-slang.txt").read_text(encoding="utf-8").splitlines()
                 self.assertTrue(slang)

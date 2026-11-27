@@ -89,9 +89,24 @@ KeyboardLayout {
                 source.write_bytes(gzip.compress(("\n".join(words) + "\n").encode()))
                 os.utime(source, ns=(stamp, stamp))
                 keyboard.write_completions(index, source)
-                self.assertEqual(json.loads(index.read_text().split(" = ", 1)[1]), {"сл": words})
+                self.assertEqual(json.loads(index.read_text().split(" = ", 1)[1]), {"с": words, "сл": words})
             with patch.object(gzip, "open", side_effect=AssertionError("cache was not reused")):
                 keyboard.write_completions(index, source)
+
+    def test_legacy_index_replaced_despite_unchanged_dictionary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keyboard = self.load_keyboard(directory)
+            dictionary, index = root / "en.txt.gz", root / "DeckWords.js"
+            dictionary.write_bytes(gzip.compress(b"him\nhere\nhello\nhow\nhave\n"))
+            index.write_text('.pragma library\nvar words = {"he":["here","hello"]}\n')
+            stamp = dictionary.stat().st_mtime_ns
+            os.utime(index, ns=(stamp, stamp))
+            keyboard.write_completions(index, dictionary)
+            words = json.loads(index.read_text().split(" = ", 1)[1])
+            self.assertEqual(words["h"][:3], ["hello", "how", "have"])
+            self.assertEqual(words["he"], ["here", "hello"])
+            self.assertEqual(len(words["h"]), len(set(words["h"])))
 
     def test_add_spelling_index_to_previous_install_then_roll_back(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -113,7 +128,7 @@ KeyboardLayout {
             keyboard.write_completions(index, source, spelling)
             self.assertEqual(json.loads(spelling.read_text().split(" = ", 1)[1]),
                              {"до": {"мик": 1, "м": 2}})
-            self.assertEqual(json.loads(index.read_text().split(" = ", 1)[1]), {"до": ["домик", "дом"]})
+            self.assertEqual(json.loads(index.read_text().split(" = ", 1)[1]), {"д": ["домик", "дом"], "до": ["домик", "дом"]})
 
     def test_replacement_and_missing_model(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,15 +136,22 @@ KeyboardLayout {
             keyboard = self.load_keyboard(directory)
             model, index = root / "ru-next.json.gz", root / "DeckNext.js"
 
-            def generate(word, stamp):
+            def generate(word, stamp, suffix=None):
                 data = {"format": 1, "bigram": {"доброе": [word]}, "trigram": {}}
+                if suffix is not None:
+                    data["suffix"] = suffix
                 model.write_bytes(gzip.compress(json.dumps(data, ensure_ascii=False).encode()))
                 os.utime(model, ns=(stamp, stamp))
                 keyboard.write_predictions(index, model)
 
+            # Old installations can have a valid timestamp and no suffix export.
+            index.write_text(".pragma library\nvar bigram = {}\nvar trigram = {}\n")
+            os.utime(index, ns=(2_000_000_000, 2_000_000_000))
             generate("утро", 2_000_000_000)
             self.assertIn('"доброе":["утро"]', index.read_text())
-            generate("дело", 1_000_000_000)
+            self.assertIn("var suffix = {}", index.read_text())
+            generate("дело", 1_000_000_000, suffix={"ого": ["дня"]})
+            self.assertIn('var suffix = {"ого":["дня"]}', index.read_text())
             self.assertIn('"доброе":["дело"]', index.read_text())
             self.assertNotIn("утро", index.read_text())
             with patch.object(gzip, "open", side_effect=AssertionError("cache was not reused")):
@@ -139,3 +161,4 @@ KeyboardLayout {
                 keyboard.write_predictions(index, model)
             self.assertIn("var bigram = {}", index.read_text())
             self.assertIn("var trigram = {}", index.read_text())
+            self.assertIn("var suffix = {}", index.read_text())

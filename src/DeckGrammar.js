@@ -276,9 +276,9 @@ function candidates(history, prefix, words, groups, spelling, model) {
             }
         }
     }
-    if (prefix.length >= 2) {
-        // The word buckets are in corpus frequency order. Expand a bounded
-        // set of frequent families, including endings absent from the corpus.
+    if (prefix.length) {
+        // Expand a bounded set of frequent families, including inflections
+        // absent from the corpus. A single letter uses the short initial bucket.
         const bucket = words[prefix.slice(0, 2)] || []
         const stem = prefix.slice(0, Math.max(2, prefix.length - 2))
         for (const start of stem === prefix ? [prefix] : [prefix, stem]) {

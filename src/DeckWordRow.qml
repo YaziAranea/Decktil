@@ -23,7 +23,8 @@ KeyboardRow {
     readonly property var wordContext: blocked ? null : Prediction.context(
         InputContext.surroundingText, InputContext.cursorPosition, InputContext.locale)
     readonly property var candidates: Prediction.suggestions(
-        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram, personal.words, Spelling.spelling, Morph.model)
+        wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram,
+        personal.words, Spelling.spelling, Morph.model, NextWords.suffix)
 
     property DeckPersonal personalization: DeckPersonal {
         id: personal

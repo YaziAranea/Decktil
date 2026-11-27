@@ -10,6 +10,8 @@ import shutil
 from tempfile import TemporaryDirectory
 from urllib.request import urlopen
 
+from build_morphology import EXCLUDED, load_dictionary
+
 
 WORDS = Path(__file__).resolve().parents[1] / "src" / "words"
 REVISION = "525f9b560de45753a5ea01069454e72e9aa541c6"
@@ -22,12 +24,17 @@ TOKEN = {
     "en": re.compile(r"[a-z]+(?:['-][a-z]+)*"),
     "ru": re.compile(r"[а-яё]+(?:-[а-яё]+)*"),
 }
-CORPUS_LIMIT = 100_000
+BASE_COUNT = 100_000
+CORPUS_LIMIT = 130_000
+ESDB_FILE = "en_US-large.txt"
+ESDB_URL = ("https://raw.githubusercontent.com/en-wl/wordlist-diff/"
+            "7f2f4078354752045ee16a041605686561122185/en_US-large.txt")
+ESDB_HASH = "815abb6f1855304a6c3f358aa1e5ce85823140a547226ce4114386f9b796c30f"
 COMMON_WORDS = 3_000
 SLANG_INTERVAL = 8
 
 
-def corpus_words(path, lang):
+def corpus_words(path, lang, recognized):
     with path.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     if digest != CHECKSUM[lang]:
@@ -36,9 +43,13 @@ def corpus_words(path, lang):
     words = {}
     with path.open(encoding="utf-8") as source:
         for line in source:
-            word, _ = line.rstrip("\n").rsplit(" ", 1)
+            word, count = line.rstrip("\n").rsplit(" ", 1)
+            if int(count) < 2:
+                break
             word = word.replace("’", "'")
             if 2 <= len(word) <= 32 and TOKEN[lang].fullmatch(word):
+                if len(words) >= BASE_COUNT and not recognized(word):
+                    continue
                 words[word] = None
                 if len(words) == CORPUS_LIMIT:
                     break
@@ -71,22 +82,42 @@ def rank_words(corpus, slang):
     return list(ranked)
 
 
+def validators(stage, source_dir, wheel_dir):
+    english = (source_dir or stage) / ESDB_FILE
+    if source_dir is None:
+        with urlopen(ESDB_URL, timeout=120) as remote, english.open("wb") as out:
+            shutil.copyfileobj(remote, out)
+    data = english.read_bytes()
+    if hashlib.sha256(data).hexdigest() != ESDB_HASH:
+        raise ValueError(f"Unexpected SHA-256 for {english}")
+    english_words = set(data.decode("utf-8").splitlines())
+    dictionary, _ = load_dictionary(stage, wheel_dir)
+
+    def russian_word(word):
+        return any(EXCLUDED.isdisjoint(dictionary.build_tag_info(paradigm, index).grammemes)
+                   for paradigm, index in dictionary.words.get(word, ()))
+
+    return {"en": english_words.__contains__, "ru": russian_word}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, metavar="DIR",
-                        help="read en_full.txt and ru_full.txt here instead of downloading")
+                        help="read en_full.txt, ru_full.txt and en_US-large.txt here instead of downloading")
+    parser.add_argument("--wheel-dir", type=Path, help="reuse the pinned wheels for the Russian dictionary offline")
     parser.add_argument("--output-dir", type=Path, default=WORDS)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=args.output_dir) as temp:
         stage = Path(temp)
+        known = validators(stage, args.source_dir, args.wheel_dir)
         for lang in CHECKSUM:
             name = f"{lang}_full.txt"
             source = (args.source_dir or stage) / name
             if args.source_dir is None:
                 with urlopen(f"{SOURCE}/{lang}/{name}", timeout=120) as remote, source.open("wb") as copy:
                     shutil.copyfileobj(remote, copy)
-            words = rank_words(corpus_words(source, lang), read_slang(lang))
+            words = rank_words(corpus_words(source, lang, known[lang]), read_slang(lang))
             with (stage / f"{lang}.txt.gz").open("wb") as file:
                 with gzip.GzipFile(filename="", fileobj=file, mode="wb", mtime=0, compresslevel=9) as out:
                     out.write(("\n".join(words) + "\n").encode("utf-8"))

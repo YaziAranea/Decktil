@@ -38,48 +38,91 @@ def write_layout(path, body):
     os.replace(file.name, path)
 
 
+WORDS_HEADER = ".pragma library\n// Completion index with one-letter buckets\n"
+NEXT_HEADER = ".pragma library\n// Next-word index with suffix contexts\n"
+# Only the small first-letter buckets use these everyday conversation choices.
+# The full two-letter buckets retain corpus order for longer prefixes and spelling.
+FIRST_LETTER_PICKS = (
+    "привет пока почему спасибо сейчас сегодня да давай для можно мне могу "
+    "буду будет был хорошо хочу хочешь фото файл фильм йогурт йога йод "
+    "ёлка ёжик ёмкость щас щётка щенок юг юмор юрист ыкать ыканье "
+    "hello how have yes you your please people play do did don't just job join "
+    "x-ray xbox xylophone zero zone zoom"
+).split()
+
+
+def current_index(path, stamp, header):
+    if not path.is_file() or path.stat().st_mtime_ns != stamp:
+        return False
+    marker = header.encode()
+    with path.open("rb") as stream:
+        return stream.read(len(marker)) == marker
+
+
 def write_predictions(index, model):
     # An exact timestamp match also detects replacement by an older model.
     try:
         stamp = model.stat().st_mtime_ns
-        if index.is_file() and index.stat().st_mtime_ns == stamp:
+        if current_index(index, stamp, NEXT_HEADER):
             return
         with gzip.open(model, "rt", encoding="utf-8") as stream:
             data = json.load(stream)
         if not isinstance(data, dict) or data.get("format") != 1:
             raise ValueError("unsupported prediction model")
-        source = [".pragma library"]
-        for key in ("bigram", "trigram"):
-            if not isinstance(data.get(key), dict):
+        source = []
+        for key in ("bigram", "trigram", "suffix"):
+            table = data.get(key, {} if key == "suffix" else None)
+            if not isinstance(table, dict):
                 raise ValueError(f"missing {key} predictions")
-            source.append("var " + key + " = " + json.dumps(data[key], ensure_ascii=False, separators=(",", ":")))
+            source.append("var " + key + " = " + json.dumps(table, ensure_ascii=False, separators=(",", ":")))
     except (OSError, EOFError, ValueError) as error:
         # The keyboard and its ordinary prefix completions remain usable.
         print(f"Next-word suggestions unavailable for {model.name}: {error}", file=sys.stderr)
-        write_layout(index, ".pragma library\nvar bigram = {}\nvar trigram = {}\n")
+        write_layout(index, NEXT_HEADER + "var bigram = {}\nvar trigram = {}\nvar suffix = {}\n")
         return
-    write_layout(index, "\n".join(source) + "\n")
+    write_layout(index, NEXT_HEADER + "\n".join(source) + "\n")
     os.utime(index, ns=(stamp, stamp))
 
 
 def write_completions(index, dictionary, spelling_index=None):
     stamp = dictionary.stat().st_mtime_ns
-    files = [index] if spelling_index is None else [index, spelling_index]
-    if all(path.is_file() and path.stat().st_mtime_ns == stamp for path in files):
+    spelling_current = spelling_index is None or (spelling_index.is_file()
+                                                   and spelling_index.stat().st_mtime_ns == stamp)
+    if spelling_current and current_index(index, stamp, WORDS_HEADER):
         return
     buckets = {}
+    initial = {}
     spelling = {}
     with gzip.open(dictionary, "rt", encoding="utf-8") as words:
         for rank, line in enumerate(words, 1):
             word = line.strip()
+            if not word:
+                continue
             buckets.setdefault(word[:2], []).append(word)
+            # A short frequency list supplies both literal suggestions and the
+            # Russian inflection engine. Avoid subtitle fragments beginning with
+            # a soft/hard sign or ы. Attested ы headwords are picked below.
+            if len(word) > 1 and word[0] not in "ьъы":
+                first = initial.setdefault(word[0], [])
+                if len(first) < 64:
+                    first.append(word)
             if spelling_index is not None:
                 spelling.setdefault(word[:2], {})[word[2:]] = rank
-    for path, name, table in ((index, "words", buckets), (spelling_index, "spelling", spelling)):
-        if path is not None:
-            write_layout(path, f".pragma library\nvar {name} = " +
-                         json.dumps(table, ensure_ascii=False, separators=(",", ":")))
-            os.utime(path, ns=(stamp, stamp))
+    for word in reversed(FIRST_LETTER_PICKS):
+        if word in buckets.get(word[:2], ()):
+            first = initial.setdefault(word[0], [])
+            if word in first:
+                first.remove(word)
+            first.insert(0, word)
+            del first[64:]
+    buckets.update(initial)
+    write_layout(index, WORDS_HEADER + "var words = " +
+                 json.dumps(buckets, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.utime(index, ns=(stamp, stamp))
+    if spelling_index is not None:
+        write_layout(spelling_index, ".pragma library\nvar spelling = " +
+                     json.dumps(spelling, ensure_ascii=False, separators=(",", ":")) + "\n")
+        os.utime(spelling_index, ns=(stamp, stamp))
 
 
 def write_morphology(index, dictionary):

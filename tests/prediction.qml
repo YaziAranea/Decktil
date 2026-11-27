@@ -10,13 +10,15 @@ QtObject {
 
     function run() {
         const en = {
-            words: { he: ["help", "hello", "healthy"], th: ["the", "thing", "think"] },
+            words: { h: ["hello", "how", "have"], t: ["the", "to", "that"],
+                     he: ["help", "hello", "healthy"], th: ["the", "thing", "think"] },
             bigram: { hello: ["there", "how", "i"], how: ["have", "are", "is"],
                       "don't": ["know", "think"], "ok": ["i'm", "i"] },
             trigram: { "hello how": ["are", "have"], "i don't": ["think", "know"] }
         }
         const ru = {
-            words: { "пр": ["привет", "право"] },
+            words: { "п": ["привет", "пока", "почему"], "д": ["да", "давай", "для"],
+                     "пр": ["привет", "право"] },
             bigram: { "привет": ["как", "ты", "что"], "как": ["он", "ты", "дела"] },
             trigram: { "привет как": ["дела", "ты"] }
         }
@@ -68,24 +70,46 @@ QtObject {
                                         ["herring", "hello"]), ["HERRING", "HELLO", "HELP"],
                  "personal completions promoted, capitalized and deduplicated")
             same(choices("привет |", "ru_RU"), ["как", "ты", "что"], "Russian next word")
-            same(choices("hello how |", "en_US"), ["are", "have", "is"], "trigram before bigram")
-            same(choices("привет как д|", "ru_RU"), ["дела"], "contextual one-letter completion")
+            same(choices("hello how |", "en_US"), ["are", "have"], "complete phrase outranks isolated word")
+            same(choices("hello how i|", "en_US"), ["is"], "less specific context after first letter")
+            same(choices("П|", "ru_RU"), ["Привет", "Пока", "Почему"], "first Russian letter")
+            same(choices("H|", "en_US"), ["Hello", "How", "Have"], "first English letter")
+            same(choices("привет как д|", "ru_RU"), ["дела", "да", "давай"], "one-letter phrase before dictionary")
+            same(choices("hello t|", "en_US"), ["there", "the", "to"], "second English word, one letter")
+            same(Prediction.suggestions(Prediction.context("h", 1, "en_US"), en.words, {}, {},
+                                        ["herring", "hello"]), ["herring", "hello", "how"],
+                 "personal completions are promoted from the first letter")
             same(choices("hello th|", "en_US"), ["there", "the", "thing"], "context before frequency")
             same(choices("X he| right", "en_US"), ["help", "hello", "healthy"], "dictionary fallback")
             same(choices("HE|", "en_US"), ["HELP", "HELLO", "HEALTHY"], "preserve caps")
             same(choices("ok |", "en_US"), ["I'm", "I"], "English pronoun")
             same(choices("I don’t |", "en_US"), ["think", "know"], "typographic apostrophe")
-            same(choices("hello, how |", "en_US"), ["are", "have", "is"], "conversational comma")
+            same(choices("zeppelin |", "en_US"), ["and", "in", "for"], "unknown word still offers continuations")
+            same(choices("термобокс |", "ru_RU"), ["и", "в", "на"], "unknown Russian continuation")
+            same(choices("Сегодня. |", "ru_RU"), ["Я", "Это", "Мы"], "start a new sentence")
+            same(choices("Ready?!» |", "en_US"), ["I", "The", "We"], "quoted sentence ending")
+            same(choices("example.com. |", "en_US"), [], "do not reuse a URL as sentence context")
+            same(choices("someone@example.org |", "en_US"), [], "no fallback for an address")
+            const backoff = { "ed": ["the", "it"], "pped": ["with", "i"] }
+            const rare = Prediction.context("unzipped ", 9, "en_US")
+            same(Prediction.suggestions(rare, {}, {}, {}, [], null, null, backoff),
+                 ["with", "I"], "prefer the more specific ending on an unseen word")
+            same(Prediction.suggestions(rare, {}, {unzipped:["files"]}, {}, [], null, null, backoff),
+                 ["files"], "observed phrase before endings")
+            same(choices("hello, how |", "en_US"), ["are", "have"], "conversational comma")
             same(choices("hello. how |", "en_US"), ["have", "are", "is"], "sentence boundary")
-            for (const input of ["|", "абв|", "foo@he|", "example.he|", "9he|", "_he|", "яhe|",
+            for (const input of ["|", "абв|", "foo@h|", "example.h|", "h|ello", "foo@he|", "example.he|", "9he|", "_he|", "яhe|",
                                  "he|llo", "he|世", "hell|2", "I don|’t", "hello |word", "hello\n|"])
                 same(choices(input, "en_US"), [], "protected position " + input)
+            same(apply("H|", "en_US", "Hello"), "Hello |", "complete and append one space")
+            same(apply("left h| right", "en_US", "hello"), "left hello| right", "complete one letter in the middle")
+            same(apply("П|!", "ru_RU", "Привет"), "Привет|!", "complete beside punctuation")
             same(apply("hello |", "en_US", "how"), "hello how |", "space at document end")
             same(apply("привет |, друг", "ru_RU", "как"), "привет как|, друг", "preserve punctuation")
             same(apply("hello | world", "en_US", "how"), "hello how| world", "preserve adjacent space")
             same(apply("left he| right", "en_US", "hello"), "left hello| right", "preserve surrounding text")
             same(apply("hello |\n", "en_US", "how"), "hello how |\n", "preserve trailing line break")
-            same(choices("hello how |\n", "en_US"), ["are", "have", "is"], "rich text chaining")
+            same(choices("hello how |\n", "en_US"), ["are", "have"], "rich text chaining")
             same(apply("hello how |\n", "en_US", "are"), "hello how are |\n", "keep one separator")
             same(Prediction.canAppendSpace("я \n\n", 2), true, "Codex trailing paragraph breaks")
             same(Prediction.canAppendSpace("я \nдальше", 2), false, "text beyond a true newline")

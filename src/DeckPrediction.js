@@ -9,7 +9,7 @@ function wordChar(ch) {
 }
 
 function horizontalSpace(ch) {
-    return ch === " " || ch === "\t" || ch === "\u00a0"
+    return ch === " " || ch === "\t" || ch === "\u00a0" || ch === "\u202f"
 }
 
 function boundary(ch) {
@@ -77,6 +77,26 @@ function precedingWords(text, pos, russian, limit, crossComma) {
     return result
 }
 
+// Recognize a sentence boundary only after a complete word in this language.
+function afterSentence(text, pos, russian) {
+    const end = pos
+    while (pos > 0 && horizontalSpace(text.charAt(pos - 1)))
+        --pos
+    if (pos === end)
+        return false
+    while (pos > 0 && /[»”"'’)\]]/.test(text.charAt(pos - 1)))
+        --pos
+    const mark = pos
+    while (pos > 0 && /[.!?…]/.test(text.charAt(pos - 1)))
+        --pos
+    if (pos === mark)
+        return false
+    const wordEnd = pos
+    while (pos > 0 && wordEnd - pos < 64 && wordChar(text.charAt(pos - 1)))
+        --pos
+    return wordStart(text, pos) && validWord(text.slice(pos, wordEnd), russian, false)
+}
+
 function context(text, pos, locale) {
     const russian = locale.startsWith("ru")
     if ((!russian && !locale.startsWith("en")) || pos <= 0 || pos > text.length
@@ -89,8 +109,11 @@ function context(text, pos, locale) {
     if (prefix && (!validWord(prefix, russian, true) || !wordStart(text, start)))
         return null
     const previous = precedingWords(text, start, russian, 2, true)
-    if (!prefix && !previous.length)
-        return null
+    if (!prefix && !previous.length) {
+        if (!afterSentence(text, pos, russian))
+            return null
+        return { prefix: "", previous: [], russian: russian, history: [], sentenceStart: true }
+    }
     // Keep the longer grammatical context inside the local prediction engine.
     const history = russian ? precedingWords(text, start, true, 6, false) : []
     return { prefix: prefix, previous: previous, russian: russian, history: history }
@@ -209,17 +232,37 @@ function corrections(ctx, prefix, words, spelling, priorityGroups) {
                 .sort((a, b) => a.score - b.score || a.word.localeCompare(b.word)).slice(0, 3)
 }
 
-function suggestions(ctx, words, bigram, trigram, personal, spelling, morphology) {
+function continuationFallback(lastWord, russian, endings) {
+    // Use recurring continuations shared by several different words with this
+    // ending. Personal choices and observed phrases have already had priority.
+    if (endings) {
+        for (let n = Math.min(lastWord.length - 1, 4); n >= 2; --n) {
+            const candidates = lookup(endings, lastWord.slice(-n))
+            if (candidates.length)
+                return candidates.slice(0, 3).map(word =>
+                    !russian && (word === "i" || word.startsWith("i'")) ? "I" + word.slice(1) : word)
+        }
+    }
+    return russian ? ["и", "в", "на"] : ["and", "in", "for"]
+}
+
+function suggestions(ctx, words, bigram, trigram, personal, spelling, morphology, endings) {
     if (!ctx)
         return []
+    if (ctx.sentenceStart)
+        return ctx.russian ? ["Я", "Это", "Мы"] : ["I", "The", "We"]
     const result = []
     const seen = []
     const prefix = canonical(ctx.prefix)
     const last = ctx.previous.length - 1
     const groups = personal && personal.length ? [personal] : []
-    if (last === 1)
-        groups.push(lookup(trigram, ctx.previous.join(" ")))
-    if (last >= 0)
+    const phrase = last === 1 ? lookup(trigram, ctx.previous.join(" ")) : []
+    if (phrase.length)
+        groups.push(phrase)
+    // A word can change part of speech inside a phrase, e.g. "the download".
+    // Keep observed phrase continuations together. Once a letter is entered,
+    // the less specific context can supply other matching completions again.
+    if (last >= 0 && (prefix || !phrase.length))
         groups.push(lookup(bigram, ctx.previous[last]))
     const priorityGroups = groups.slice()
     const grammatical = ctx.russian && morphology
@@ -230,7 +273,7 @@ function suggestions(ctx, words, bigram, trigram, personal, spelling, morphology
         groups.unshift(grammatical.words)
     }
     const contextual = groups.length
-    if (prefix.length >= 2 && !(grammatical && grammatical.confident))
+    if (prefix.length && !(grammatical && grammatical.confident))
         groups.push(lookup(words, prefix.slice(0, 2)))
     let pinned = 0
     exact: for (let g = 0; g < groups.length; ++g) {
@@ -260,6 +303,8 @@ function suggestions(ctx, words, bigram, trigram, personal, spelling, morphology
                 break exact
         }
     }
+    if (!prefix && !result.length && last >= 0)
+        return continuationFallback(ctx.previous[last], ctx.russian, endings)
     if ((grammatical && grammatical.confident) || !spelling || prefix.length < 3
             || prefix.length > 32 || pinned === 3)
         return result
