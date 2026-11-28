@@ -22,7 +22,7 @@ KeyboardRow {
         host.predictionText, host.predictionText.length, VirtualKeyboardSettings.locale)
     readonly property var candidates: Prediction.suggestions(
         wordContext, Dictionary.words, NextWords.bigram, NextWords.trigram,
-        [], null, Morph.model, NextWords.suffix)
+        host.personalWords, null, Morph.model, NextWords.suffix)
 
     Repeater {
         model: 3

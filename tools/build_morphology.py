@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from urllib.request import urlopen
@@ -115,6 +116,28 @@ def families(dictionary, vocabulary, full_families=FULL_FAMILIES):
         entries = [[word, mask, gender, number] for (word, gender, number), mask in forms.items()]
         output.append([lemma, part, entries])
     return output
+
+
+def technical_nouns(training):
+    """Read hand-reviewed, inanimate masculine paradigms in explicit case order."""
+    # Nominative and accusative coincide in both numbers for these nouns.
+    nominative = CASES["nomn"] | CASES["accs"]
+    readings = [(nominative, "s"), (nominative, "p")]
+    for number in ("s", "p"):
+        readings.extend((CASES[case], number) for case in ("gent", "datv", "ablt", "loct"))
+    path = training / "ru-tech-nouns.tsv"
+    seen = set()
+    for line, row in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        forms = row.split("\t")
+        if len(forms) != len(readings) or not all(re.fullmatch(r"[а-яё]+(?:-[а-яё]+)*", w)
+                                                   and 2 <= len(w) <= 32 for w in forms):
+            raise ValueError(f"{path.name}:{line}: invalid technical noun paradigm")
+        lemma = forms[0]
+        if lemma in seen:
+            raise ValueError(f"{path.name}:{line}: repeated lemma {lemma}")
+        seen.add(lemma)
+        yield [lemma, "NOUN", [[word, mask, "m", number]
+                               for word, (mask, number) in zip(forms, readings)]]
 
 
 def pair_resolver(dictionary, probabilities, data):
@@ -257,7 +280,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="decktil-morph-") as temp:
         dictionary, probabilities = load_dictionary(Path(temp), args.wheel_dir)
         with gzip.open(args.source, "rt", encoding="utf-8") as source:
-            data = families(dictionary, (line.strip() for line in source if line.strip()))
+            vocabulary = [line.strip() for line in source if line.strip()]
+        data = families(dictionary, vocabulary)
+        known_nouns = {lemma for lemma, part, _ in data if part == "NOUN"}
+        available = set(vocabulary)
+        for lemma, part, forms in technical_nouns(args.training_dir):
+            if lemma in available and lemma not in known_nouns:
+                data.append([lemma, part, [form for form in forms if form[0] in available]])
         resolve = pair_resolver(dictionary, probabilities, data)
         recurring = dict(recurring_bigrams(args.training_dir))
         if args.from_export:

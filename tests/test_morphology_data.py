@@ -23,6 +23,9 @@ class MorphologyDataTests(unittest.TestCase):
 
     def test_dictionary_preserves_ambiguous_cases_and_numbers(self):
         examples = [
+            ("плагин", "NOUN", ["плагином", 16, "m", "s"]),
+            ("плагин", "NOUN", ["плагинов", 2, "m", "p"]),
+            ("деплой", "NOUN", ["деплоя", 2, "m", "s"]),
             ("книга", "NOUN", ["книги", 2, "f", "s"]),
             ("книга", "NOUN", ["книги", 9, "f", "p"]),
             ("игра", "NOUN", ["игре", 36, "f", "s"]),

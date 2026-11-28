@@ -8,7 +8,6 @@ from uuid import uuid4
 
 
 MAX_ENTRIES_PER_LANGUAGE = 12000
-MIN_USES = 2
 WORD = {
     "en": re.compile(r"[a-z]+(?:['-][a-z]+)*"),
     "ru": re.compile(r"[а-яё]+(?:-[а-яё]+)*"),
@@ -175,8 +174,8 @@ def suggestions(locale, prev2, prev1, prefix):
         for a, b in contexts:
             # The unique index covers language, context and this prefix range.
             rows = db.execute("""SELECT word FROM entries
-                WHERE lang=? AND prev2=? AND prev1=? AND word>? AND word<? AND uses>=?
-                ORDER BY uses DESC, word LIMIT 3""", (lang, a, b, prefix, prefix + "\U0010ffff", MIN_USES))
+                WHERE lang=? AND prev2=? AND prev1=? AND word>? AND word<?
+                ORDER BY uses DESC, rowid DESC LIMIT 3""", (lang, a, b, prefix, prefix + "\U0010ffff"))
             for (word,) in rows:
                 if word not in result:
                     result.append(word)
@@ -191,11 +190,11 @@ def suggestions(locale, prev2, prev1, prefix):
             close = []
             for a, b in contexts:
                 rows = db.execute("""SELECT word FROM entries
-                    WHERE lang=? AND prev2=? AND prev1=? AND uses>=?
+                    WHERE lang=? AND prev2=? AND prev1=?
                       AND length(word) BETWEEN ? AND ? AND (word GLOB ? OR word GLOB ?)
                       AND word NOT GLOB ? AND one_edit(word, ?)
-                    ORDER BY uses DESC, word LIMIT 3""",
-                    (lang, a, b, MIN_USES, len(prefix)-1, len(prefix)+1,
+                    ORDER BY uses DESC, rowid DESC LIMIT 3""",
+                    (lang, a, b, len(prefix)-1, len(prefix)+1,
                      prefix[0]+"*", "*"+prefix[-1], prefix+"*", prefix))
                 for (word,) in rows:
                     if word not in close:

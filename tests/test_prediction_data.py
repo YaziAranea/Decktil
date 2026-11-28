@@ -28,11 +28,13 @@ class PredictionDataTests(unittest.TestCase):
         examples = {
             "en": {"hello": "how", "hello how": "are", "thank you": "for", "i don't": "know",
                    "i think": "we", "skill": "issue", "grab some": "loot", "everyone typed": "gg",
+                   "plugin": "settings", "commit message": "describes", "deployment pipeline": "is",
                    "awesome": "work", "the repository": "contains", "the download": "has"},
             "ru": {"привет": "как", "привет как": "дела", "спасибо за": "помощь", "я не": "могу",
                    "я могу": "помочь", "лови": "инвайт", "это полный": "кринж", "все написали": "гг",
                    "варить": "суп", "сделать снимок": "экрана", "клавиатура": "работает",
-                   "планшет": "подключён"},
+                   "планшет": "подключён", "подключить": "плагин", "отключить": "плагин",
+                   "настроить вебхук": "в", "перед коммитом": "запусти", "токен доступа": "истёк"},
         }
         for lang, pairs in examples.items():
             with gzip.open(WORDS / f"{lang}-next.json.gz", "rt", encoding="utf-8") as stream:

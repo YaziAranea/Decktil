@@ -26,6 +26,20 @@ function complete(state, russian, records) {
     state.word = ""
 }
 
+// Enter may submit a chat instead of inserting a newline. Confirm only the
+// word already typed and acknowledged at this caret, once, before submission.
+function finish(state, text, pos, locale) {
+    const tail = state.word + state.punctuation
+    const next = text.charAt(pos)
+    if (!state.word || state.edits.length || pos !== state.pos || pos < tail.length
+            || text.slice(pos - tail.length, pos) !== tail || !Prediction.boundary(next)
+            || (next === "." && Prediction.wordChar(text.charAt(pos + 1))))
+        return []
+    const records = []
+    complete(state, locale.startsWith("ru"), records)
+    return records
+}
+
 function apply(state, edit, russian, records) {
     if (edit.erase) {
         if (state.punctuation)
@@ -54,8 +68,18 @@ function apply(state, edit, russian, records) {
             state.previous = []
         state.punctuation = ""
         state.canStart = true
-    } else if (/^[.,!?;:…]$/.test(ch) && state.word && state.punctuation.length < 4) {
-        // Wait for whitespace. A subsequent letter could be part of an address.
+    } else if (state.canStart && /^[,;!?…)\]}»”"]$/.test(ch)) {
+        const endSentence = /[.!?:;…]/.test(state.punctuation + ch)
+        complete(state, russian, records)
+        if (endSentence)
+            state.previous = []
+        state.punctuation = ""
+    } else if (state.canStart && !state.word && /^[([{«“„]$/.test(ch)) {
+        // Opening punctuation can precede a fresh, explicitly typed word.
+        state.punctuation = ""
+    } else if (/^[.:]$/.test(ch) && state.word && state.punctuation.length < 4) {
+        // A dot or colon may be part of a hostname or URL scheme. Wait for
+        // a definitive boundary (a separator or an explicit Enter).
         state.punctuation += ch
     } else if (Prediction.wordChar(ch) && !state.punctuation && state.word.length < 32) {
         state.word += ch

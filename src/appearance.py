@@ -103,7 +103,14 @@ def load_custom():
     return None
 
 
-def save(config):
+def number_row_visible():
+    try:
+        return _read(_path()).getboolean("Layout", "numberRow", fallback=True)
+    except ValueError:
+        return True
+
+
+def save(config, *, number_row=None):
     selected = _validated(config)
     path = _path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -112,6 +119,10 @@ def save(config):
     with (path.parent / ".appearance.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         settings = _read(path)
+        if number_row is not None:
+            if not settings.has_section("Layout"):
+                settings.add_section("Layout")
+            settings.set("Layout", "numberRow", "true" if number_row else "false")
         settings["Appearance"] = selected
         if selected["preset"] == "custom":
             settings["Custom"] = selected

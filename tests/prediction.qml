@@ -60,6 +60,27 @@ QtObject {
                 {word: "go", previous: []}, {word: "now", previous: ["go"]},
                 {word: "yes", previous: []}
             ], "sentence ending resets expression context")
+            same(train("", Array.from("«микроплагин»"), "ru_RU"), [
+                {word: "микроплагин", previous: []}
+            ], "closing punctuation confirms a manually typed word immediately")
+            same(train("", Array.from("store,plugin!again?")), [
+                {word: "store", previous: []}, {word: "plugin", previous: ["store"]},
+                {word: "again", previous: []}
+            ], "punctuation finalizes once and resets context at sentence boundaries")
+            same(train("", Array.from("a.b https://some.org?x=test,private ")), [],
+                 "URL and attached fragments never become training samples")
+            same(train("", Array.from("dashboard.")), [], "a trailing dot can still form an address")
+            const ending = Learning.start("", 0)
+            for (const ch of "dekk")
+                Learning.queue(ending, ch, "", false)
+            same(Learning.finish(ending, "dekk", 4, "en_US"), [], "Enter skips unacknowledged events")
+            same(Learning.confirm(ending, "dekk", 4, "en_US"), [], "manual final word acknowledged")
+            same(Learning.finish(ending, "dekkard", 4, "en_US"), [], "Enter before an existing suffix")
+            same(Learning.finish(ending, "dekk.net", 4, "en_US"), [], "Enter inside an existing address")
+            same(Learning.finish(ending, "edit", 4, "en_US"), [], "Enter skips replaced text")
+            same(Learning.finish(ending, "dekk\n", 4, "en_US"), [{word:"dekk", previous:[]}],
+                 "Enter finalizes the last word beside a rich-text trailing break")
+            same(Learning.finish(ending, "dekk\n", 4, "en_US"), [], "Enter cannot count the same word twice")
             const mismatch = Learning.start("", 0)
             Learning.queue(mismatch, "x", "", false)
             same(Learning.confirm(mismatch, "y", 1, "en_US"), null, "editor rejected key")

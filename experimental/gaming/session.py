@@ -38,6 +38,7 @@ class Pilot:
         self.displaced = None
         self.touched = self.pressed = self.typed = False
         self.words = TypedContext()
+        self.pending_learning = []
         self.observed_editor = lambda now: None
 
     def stop(self, *, restore=False):
@@ -51,6 +52,7 @@ class Pilot:
         self.gate.reset()
         self.frames.reset()
         self.words.update(None)
+        self.pending_learning.clear()
         if self.sink is not None:
             self.sink.close()
         self.sink = self.target = None
@@ -200,6 +202,10 @@ class Pilot:
                 self.stop()
             elif not self.plane_available(self.xid):
                 self.stop(restore=True)
+            elif getattr(self.target, "search", False):
+                # This periodic guard just revalidated the specific accessible
+                # search entry. Reuse it without another AT-SPI call per key.
+                self.confirm_learning(self.target, now)
 
     def presentation_target(self):
         return self.focus.editor()
@@ -217,10 +223,40 @@ class Pilot:
             return field
         return None
 
-    def update_words(self, field, **edit):
+    def update_words(self, field, *, delivered_at=None, choice="", generation="", **edit):
+        changed_field = field != self.words.field
+        inserted, action = edit.get("inserted", ""), edit.get("action")
+        previous = self.words.text[-1:] if not changed_field else ""
+        explicit = delivered_at is not None and (choice or len(inserted) == 1 or action in ("enter", "backspace"))
+        if changed_field or (edit and not explicit):
+            self.pending_learning.clear()
+            if self.visible and self.words.field is not None:
+                self.send({"op": "resetLearning", "token": self.token})
+        if explicit and self.visible and field is not None and (generation or inserted == " "):
+            # The panel can deliver physical keystrokes before the foreground
+            # field watcher finishes its next observation. Confirm both sides
+            # of that interval before handing an edit to the personal model.
+            if len(self.pending_learning) >= 128:
+                self.pending_learning.clear()
+                self.send({"op": "resetLearning", "token": self.token})
+            self.pending_learning.append((delivered_at, {"text": inserted, "choice": choice,
+                                          "action": action or "", "previous": previous,
+                                          "generation": generation}))
         if self.words.update(field, **edit) and self.visible:
             self.send({'op': 'prediction', 'token': self.token, 'revision': self.words.revision,
                        'text': self.words.text})
+
+    def confirm_learning(self, field, sampled_at):
+        if not self.visible or not self.pending_learning:
+            return
+        if field is None or self.words.field != field:
+            if self.pending_learning[0][0] <= sampled_at:
+                self.pending_learning.clear()
+                self.send({"op": "resetLearning", "token": self.token})
+            return
+        while self.pending_learning and self.pending_learning[0][0] <= sampled_at:
+            _, edit = self.pending_learning.pop(0)
+            self.send({"op": "personalEdit", "token": self.token, "edit": edit})
 
     def event(self, message, now):
         op = message.get('op')
@@ -255,6 +291,7 @@ class Pilot:
         if op == 'resetPrediction':
             self.update_words(None)
             return
+        started_at = time.monotonic()
         field = self.prediction_field(now)
         action = None
         value = ""
@@ -284,7 +321,10 @@ class Pilot:
             self.stop()
         else:
             self.typed = True
-            self.update_words(field, inserted=value, action=action)
+            delivered_at = now + (time.monotonic() - started_at)
+            self.update_words(field, inserted=value, action=action, delivered_at=delivered_at,
+                              choice=message["word"] if op == "suggestion" else "",
+                              generation=message.get("generation", ""))
 
 
 def request_stock(action):
@@ -418,6 +458,8 @@ def main(*, big_picture=False):
             if observation is not None:
                 owner, state, sampled_at = observation
                 auto.observe(owner, state, now, sampled_at=sampled_at)
+                verified_field = (owner, state[1]) if state and state[0] in ("editor", "inline") else None
+                manual.confirm_learning(verified_field, sampled_at)
         else:
             auto.observe(None, None, now)
         pilot.tick(now)

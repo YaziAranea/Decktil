@@ -29,7 +29,14 @@ QtObject {
         location: StandardPaths.writableLocation(StandardPaths.GenericConfigLocation) + "/decktil/appearance.ini"
         category: "Appearance"
     }
+    property bool showNumberRow: true
+    property Settings layoutSettings: Settings {
+        location: skin.settings.location
+        category: "Layout"
+    }
     function reload() {
+        layoutSettings.sync()
+        showNumberRow = String(layoutSettings.value("numberRow", true)).toLowerCase() !== "false"
         settings.sync()
         preset = settings.value("preset", "default")
         if (usingSkin) {

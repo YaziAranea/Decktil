@@ -207,7 +207,7 @@ def generate_layouts(*, gaming=False):
             local_delegate.symlink_to(DELEGATE)
         # QML resolves relative JS imports against the component's real path.
         components = ("DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml", "DeckAppearance.qml",
-                      "DeckPrediction.js", "DeckGrammar.js")
+                      "DeckPrediction.js", "DeckGrammar.js", "DeckNumberRow.qml")
         if gaming:
             components += ("DeckGameWordRow.qml",)
         else:
@@ -242,7 +242,8 @@ def generate_layouts(*, gaming=False):
             if source.name == "main.qml":
                 body = add_alternate_keys(body)
                 row = "DeckGameWordRow { host: decktilGamePanel }" if gaming else "DeckWordRow {}"
-                body = re.sub(r"(?m)^([ \t]*)KeyboardRow \{", rf"\1{row}\n\1KeyboardRow {{", body, count=1)
+                number_row = "DeckNumberRow { visible: deckLayout.deckAppearance.palette.showNumberRow }"
+                body = re.sub(r"(?m)^([ \t]*)KeyboardRow \{", rf"\1{row}\n\1{number_row}\n\1KeyboardRow {{", body, count=1)
             write_layout(target, body)
 
 

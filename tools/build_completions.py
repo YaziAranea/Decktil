@@ -10,7 +10,7 @@ import shutil
 from tempfile import TemporaryDirectory
 from urllib.request import urlopen
 
-from build_morphology import EXCLUDED, load_dictionary
+from build_morphology import EXCLUDED, load_dictionary, technical_nouns
 
 
 WORDS = Path(__file__).resolve().parents[1] / "src" / "words"
@@ -117,7 +117,11 @@ def main():
             if args.source_dir is None:
                 with urlopen(f"{SOURCE}/{lang}/{name}", timeout=120) as remote, source.open("wb") as copy:
                     shutil.copyfileobj(remote, copy)
-            words = rank_words(corpus_words(source, lang, known[lang]), read_slang(lang))
+            curated = read_slang(lang)
+            if lang == "ru":
+                for _, _, forms in technical_nouns(WORDS / "training"):
+                    curated.extend(form[0] for form in forms)
+            words = rank_words(corpus_words(source, lang, known[lang]), list(dict.fromkeys(curated)))
             with (stage / f"{lang}.txt.gz").open("wb") as file:
                 with gzip.GzipFile(filename="", fileobj=file, mode="wb", mtime=0, compresslevel=9) as out:
                     out.write(("\n".join(words) + "\n").encode("utf-8"))

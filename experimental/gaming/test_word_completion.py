@@ -46,6 +46,28 @@ class WordCompletionTests(unittest.TestCase):
                 self.assertEqual(self.output.received,
                                  [first, ' ', second[0], second[1:] + ' ', following + ' '])
 
+    def test_learning_requires_fresh_observation_and_only_panel_edits(self):
+        field = (self.focus.current, self.key)
+        for ch in "qt":
+            self.event("text", text=ch, generation="test")
+        self.assertFalse(any(m["op"] == "personalEdit" for m in self.messages))
+        self.pilot.confirm_learning(field, .99)
+        self.assertFalse(any(m["op"] == "personalEdit" for m in self.messages))
+        self.pilot.confirm_learning(field, 1.1)
+        edits = [m["edit"] for m in self.messages if m["op"] == "personalEdit"]
+        self.assertEqual([edit["text"] for edit in edits], list("qt"))
+        self.assertTrue(all(edit["generation"] == "test" for edit in edits))
+        self.event("text", text=" ")
+        self.pilot.confirm_learning((self.focus.current, ("other",)), 1.2)
+        self.assertEqual(self.messages[-1]["op"], "resetLearning")
+
+        # Restoring the suffix after a Steam animation and a bulk insertion
+        # can update predictions but do not represent individually typed keys.
+        self.pilot.update_words(field, inserted="restored text")
+        self.event("text", text="bulk text")
+        self.pilot.confirm_learning(field, 2)
+        self.assertEqual(sum(m["op"] == "personalEdit" for m in self.messages), 2)
+
     def test_focus_change_and_locale_reset_invalidate_old_candidates(self):
         self.event('text', text='hel')
         pick = dict(prefix='hel', word='hello', revision=self.pilot.words.revision)
@@ -66,10 +88,14 @@ class WordCompletionTests(unittest.TestCase):
         self.event('text', text='q')
         self.event('action', action='left')
         self.assertEqual(self.pilot.words.text, '')
-        self.key = ('page', 1, 'email', (1, 2))
-        self.event('text', text='private')
-        self.assertEqual(self.pilot.words.text, '')
-        self.assertNotIn('private', [m.get('text') for m in self.messages])
+        for kind in ("email", "url", "tel", "private", "password"):
+            with self.subTest(kind=kind):
+                self.key = ("page", 1, kind, (1, 2))
+                for char in "private ":
+                    self.event("text", text=char, generation="test")
+                self.pilot.confirm_learning((self.focus.current, self.key), 2)
+                self.assertEqual(self.pilot.words.text, "")
+                self.assertFalse(any(m["op"] == "personalEdit" for m in self.messages))
 
     def test_stale_partial_prefix_cannot_change_a_word(self):
         self.event('text', text='shell')

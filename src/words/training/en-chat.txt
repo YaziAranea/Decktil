@@ -476,3 +476,119 @@ see you this weekend
 can we meet tomorrow
 pick up the parcel
 have dinner together
+install a plugin for the editor
+install the plugin from the repository
+install the plugin locally
+install the driver for the controller
+enable the plugin in settings
+enable the plugin after installation
+enable a plugin for this project
+disable the plugin temporarily
+this plugin works offline
+this plugin adds keyboard suggestions
+plugin settings are saved locally
+plugin settings include a shortcut
+the plugin supports both languages
+update the plugin to the latest version
+update all installed plugins
+check for plugin updates
+set up the plugin
+configure the plugin for this project
+a new plugin is available
+open the plugin manager
+load plugins at startup
+install missing dependencies
+install dependencies before building
+resolve the dependency conflict
+create a commit for the change
+the latest commit fixes the issue
+review the latest commit
+commit message describes the fix
+commit message explains the change
+commit changes to the branch
+commit changes before switching branches
+commit the fix to the repository
+commit the changes after testing
+amend the last commit
+push the branch to the remote
+merge the pull request
+open a pull request
+review this pull request
+resolve merge conflicts
+create a feature branch
+switch to another branch
+deploy the backend to staging
+deploy the service locally
+deploy the update after testing
+the deployment pipeline is ready
+restart the deployment pipeline
+the pipeline passed all tests
+the build pipeline runs automatically
+the build failed during compilation
+build the package from source
+rebuild the package after upgrading
+release notes describe the changes
+roll back the deployment
+apply the hotfix before upgrading
+test the release candidate
+the backend handles requests
+the frontend renders the response
+connect the frontend to the backend
+this endpoint returns a response
+register a webhook for updates
+verify the webhook signature
+webhook notifications are enabled
+check the request headers
+rotate the access token
+the access token has expired
+renew the server certificate
+clear the application cache
+clear the shader cache
+cache invalidation happens automatically
+create a backup before updating
+restore the settings from backup
+take a snapshot before migration
+run the database migration
+check the application logs
+check the service logs
+read the stack trace
+attach the debugger to the process
+set a breakpoint in the debugger
+run the linter before committing
+fix the failing test
+add a regression test
+run the unit tests
+the test suite passed
+pin the dependency version
+install the graphics driver
+upgrade the kernel and reboot
+load the kernel module
+update the controller firmware
+firmware update completed successfully
+change the controller bindings
+configure the trackpad sensitivity
+reduce input latency
+shader compilation takes a minute
+enable the performance overlay
+measure the frame rate
+run the benchmark again
+open the configuration file
+use the default configuration
+mount the filesystem before copying files
+restart the background service
+build the container image
+start the container locally
+configure the reverse proxy
+open the network settings
+check the server hostname
+resolve the domain name
+open the terminal emulator
+run the shell script
+rebuild the search index
+save the keyboard layout
+select the language model
+run inference locally
+extend the prompt with an example
+the dictionary learns new words
+verify the archive checksum
+extract the downloaded archive

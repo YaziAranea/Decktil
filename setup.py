@@ -38,7 +38,7 @@ ABSENT = "__deck_plasma_unset__"
 RUNTIME_FILES = ("bridge.py", "chord.py", "profile.py", "keyboard.py", "haptics.py", "personal.py",
                  "popup.py", "suppress-steam-osk.js", "field_return.py", "browser-field-return.js", "DeckSelector.qml", "DeckWordRow.qml", "DeckGameWordRow.qml",
                  "appearance.py", "DeckAppearance.qml", "DeckPalette.qml", "DeckAlternates.js", "DeckHold.qml", "DeckKeyHint.qml",
-                 "DeckPrediction.js", "DeckGrammar.js", "DeckLearning.js", "DeckPersonal.qml",
+                 "DeckPrediction.js", "DeckGrammar.js", "DeckLearning.js", "DeckPersonal.qml", "DeckNumberRow.qml",
                  "words/ru.txt.gz", "words/en.txt.gz", "words/ru-morph.json.gz",
                  "words/ru-next.json.gz", "words/en-next.json.gz", "words/NOTICE.md")
 
@@ -636,6 +636,7 @@ def runtime_changes(state):
 # The second bridge hash and the two field-return hashes identify the tested
 # pre-release build that preceded the final KWin script lifecycle fix.
 MANUAL_BASELINES = {
+    "DeckNumberRow.qml": {None},
     "bridge.py": {"ae15a10f82cb2bc43100fee0ceea2dc840225293b5a3a09fcfe25cb77baeaa76",
                   "929c810fc4d5d9783f1a84b601a78b79b51ff5ec39038608cee5021d0f696966",
                   "0011fb687fd360bdd33ad6ad0790889befceeba21af8ab7df7c837bb9ed059c6"},
@@ -646,17 +647,30 @@ MANUAL_BASELINES = {
                          "b346b30d5b11a91aac0284b6d52c3eea1ce90ab3caba1ac51d382f19e7f8e241"},
     "suppress-steam-osk.js": {"3c89b9d680714acdba78c18262b20fbfcf78a83de2fb5a9eba72aacf4ad819b2"},
     "browser-field-return.js": {None, "356ada906b29bdf16ab48322eec199815785c85841fb923bd01b965b6f004140"},
-    "keyboard.py": {"a64b79391cb01087bb28b4d61021a93626df0095e0f409552fadad59d1751eb6",
+    "keyboard.py": {"341e0627c2b890fb601377aa102c5c1b3334ef12f3cf1f7d8b98a0029157a5d6",
+                    "a64b79391cb01087bb28b4d61021a93626df0095e0f409552fadad59d1751eb6",
                     "2ce8338d3cb04a6e2ed5f63d7b62dcfd09ab00d45e28d798e16cb3e59ad43436"},
     "DeckWordRow.qml": {"9e563f18f543511c7fa27a2b58adc853b0d95c6b4a6982bea074d7265feb6500"},
     "DeckPrediction.js": {"53c5d3dba00cb4413a77d21042594454aadb2222662b2e636c1f2f3e9902532b"},
     "DeckGrammar.js": {"2fef46924fecb49554a65be796d4641674bf3b97237132935f4ea3d7f4d4d6a3"},
-    "words/ru.txt.gz": {"1f6cfe3e8229c1b29b194213a98ce497ca080196d5506c73e57bbd2d6a224f01"},
-    "words/en.txt.gz": {"4c0c37286facd70c3f0a3bb365873e8aee1ecb970a799d267a2a5ad5e7410d06"},
-    "words/ru-next.json.gz": {"ae2b47d5ba9ad3e77e11249ab660ca75f9f0f2fc16bb46edb7e94b8de20c6eaa"},
-    "words/en-next.json.gz": {"14c5749889c6e0226ca009612b924671579e817efc039da990fde24abf2abda5"},
-    "words/ru-morph.json.gz": {"9085e5b72744e16a4dd1d381dc9547aa154dd6406099835b4d4d4c2b089cd96c"},
-    "words/NOTICE.md": {"d8f89bc39fa0a051ab13fe7b1d463c7ad69da97bec1097dc38171baaf740adb6"},
+    "words/ru.txt.gz": {"50c4576756edba78983e0bd33a16ce6c92dd0a36ec321b729e6e230ec9aa3d15",
+                        "1f6cfe3e8229c1b29b194213a98ce497ca080196d5506c73e57bbd2d6a224f01"},
+    "words/en.txt.gz": {"6c1cc8222238187d48645a655989ccb811192ff74b242fdd971ba94a6750e1f3",
+                        "4c0c37286facd70c3f0a3bb365873e8aee1ecb970a799d267a2a5ad5e7410d06"},
+    "words/ru-next.json.gz": {"daba29f78d83c5be963e3ff09a5c11cda76fae532ab21ae7f33e6c1fb88b0310",
+                              "ae2b47d5ba9ad3e77e11249ab660ca75f9f0f2fc16bb46edb7e94b8de20c6eaa"},
+    "words/en-next.json.gz": {"5c873656b8cc4d48b933b5040fecd67ffd22556d22dcd6c2df2f55d7c2447be8",
+                              "14c5749889c6e0226ca009612b924671579e817efc039da990fde24abf2abda5"},
+    "words/ru-morph.json.gz": {"513676bea8b4a987ba64e5dc8c1f146bb572c7f2f088cc18373d2aee1fe13b22",
+                               "9085e5b72744e16a4dd1d381dc9547aa154dd6406099835b4d4d4c2b089cd96c"},
+    "words/NOTICE.md": {"2df04eb33e175552c785e9310269cf42390433b19a40162e32568cd85548be22",
+                        "d8f89bc39fa0a051ab13fe7b1d463c7ad69da97bec1097dc38171baaf740adb6"},
+    "personal.py": {"f8165b1a13ae2db6a7c39acf1e43b9fe999607b3e0bcc39107e97e7de8f56a7c"},
+    "DeckGameWordRow.qml": {None, "c1f13df31c87907538b2b8ffdfa5bdc610aa72e9e30c956edad7cdedabcb311c"},
+    "appearance.py": {"7f97135379eeca20d06732f7f49d574a23e54aff5f9d4598949525ed1173b7cf"},
+    "DeckPalette.qml": {"10fb1f1fcbbf65e986888bf226ad474681b12a29c454767e024f1c3e95e1f44b"},
+    "DeckLearning.js": {"c69785f8f3991ead65cf531965773988d9b7cd03ab8d9d82efb61dc333290fa6"},
+    "DeckPersonal.qml": {"f596ab5aa967de4df1c806c093c42f8455c3c913832f06bfa3023733cab718e5"},
 }
 OLD_PROFILE_BLOCK = "27441fbd2a7e9d4397b9d1107ba6dc43f059fb967d7daf11b446209cac6ed00b"
 

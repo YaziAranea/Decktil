@@ -60,6 +60,13 @@ _OBSERVE = r"""(() => {
     else if (field.isContentEditable && field !== document.body) kind = 'contenteditable';
     else return safe;
     if (field.form && field.form.querySelector('input[type="password"]')) return safe;
+    // A plain text control can still be an account, contact or billing field.
+    // Keep its normal keyboard handoff while excluding prediction and learning.
+    const completion = (field.getAttribute('autocomplete') ||
+                        field.form?.getAttribute('autocomplete') || '').trim().toLowerCase();
+    const librarySearch = kind === 'search' && field.classList.contains(skin.search);
+    if (completion && completion !== 'on' && !(librarySearch && completion === 'off'))
+        kind = 'private';
     const keyboards = visible(cls(skin.keyboard));
     const wrappers = visible(cls(skin.positioner));
     const inline = keyboards.length === 1 && wrappers.length === 1 &&
@@ -120,7 +127,7 @@ def _result(identifier, data):
         return None
     state, epoch, kind, path = data
     if (state not in ("inline", "editor") or type(epoch) is not int or not 0 < epoch < 2**53 or
-            kind not in ("text", "search", "email", "url", "tel", "textarea", "contenteditable") or
+            kind not in ("text", "search", "email", "url", "tel", "textarea", "contenteditable", "private") or
             not isinstance(path, list) or not 0 < len(path) <= 48 or
             any(type(n) is not int or not 0 <= n <= 65535 for n in path)):
         return None

@@ -130,11 +130,9 @@ QtObject {
             // Some chat editors submit and clear instead of inserting a newline.
             // Only finalize a word already acknowledged in this focused editor.
             reconcile()
-            if (tracker && !tracker.edits.length && tracker.pos === InputContext.cursorPosition) {
-                const records = []
-                Learning.complete(tracker, InputContext.locale.startsWith("ru"), records)
-                learn(records)
-            }
+            if (tracker)
+                learn(Learning.finish(tracker, InputContext.surroundingText,
+                                      InputContext.cursorPosition, InputContext.locale))
             resetSequence()
         } else if (keyCode === Qt.Key_Space || (text && text.length === 1)) {
             key(keyCode === Qt.Key_Space ? " " : text, "", false)

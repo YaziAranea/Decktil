@@ -5,10 +5,12 @@ The supervisor owns the controller, the target and output delivery. This
 process only exchanges newline-delimited JSON over its inherited pipes.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -26,6 +28,7 @@ def main():
         sys.path.insert(0, str(snapshot / "bindings"))
     sys.path.insert(0, str(snapshot / "src"))
     import keyboard
+    import personal
 
     keyboard.layout_root = runtime / ("decktil-big-picture" if big_picture else "decktil-gaming") / "layouts"
     keyboard.generate_layouts(gaming=True)
@@ -40,6 +43,8 @@ def main():
     from PyQt6.QtQuick import QQuickWindow
 
     def event(op, **fields):
+        if op in ("text", "action", "suggestion"):
+            fields["generation"] = host.personalGeneration
         try:
             print(json.dumps(dict(op=op, **fields), ensure_ascii=True), flush=True)
         except BrokenPipeError:
@@ -51,6 +56,16 @@ def main():
         shiftChanged = pyqtSignal()
         localeSelected = pyqtSignal(str)
         predictionChanged = pyqtSignal()
+        personalGenerationChanged = pyqtSignal()
+        settingResult = pyqtSignal(int, str)
+        personalEdited = pyqtSignal("QVariantMap")
+        sequenceReset = pyqtSignal()
+        personalResult = pyqtSignal(int, "QStringList")
+        personalWordsChanged = pyqtSignal()
+        _generation = ""
+        _words = []
+        _lookup_serial = 0
+        setting_job = None
         _prediction = ""
         _revision = 0
         locale_pending = False
@@ -75,6 +90,62 @@ def main():
             if self._prediction != text or self._revision != revision:
                 self._prediction, self._revision = text, revision
                 self.predictionChanged.emit()
+
+        @pyqtProperty(str, notify=personalGenerationChanged)
+        def personalGeneration(self):
+            return self._generation
+
+        @pyqtSlot(int, str)
+        def receive_setting(self, token, generation):
+            if (self.token or 0) == token and self._generation != generation:
+                self._generation = generation
+                self.personalGenerationChanged.emit()
+
+        def poll_personal(self):
+            if self.token is None or self.setting_job and not self.setting_job.done():
+                return
+            token = self.token
+            self.setting_job = worker.submit(lambda: self.settingResult.emit(token, personal.session()))
+
+        def reload_personal(self):
+            # A generation fences pending writes after a pause or clear. The
+            # setting is read on opening and while this surface is visible.
+            generation = personal.session() if self.token is not None else ""
+            self.receive_setting(self.token or 0, generation)
+
+        @pyqtSlot(str, str, str, str, str)
+        def learn(self, generation, locale, older, previous, word):
+            def save():
+                try:
+                    personal.learn(generation, locale, older, previous, word)
+                except (OSError, sqlite3.Error):
+                    pass
+            if generation and generation == self._generation:
+                worker.submit(save)
+
+        @pyqtProperty("QStringList", notify=personalWordsChanged)
+        def personalWords(self):
+            return self._words
+
+        @pyqtSlot(int, "QStringList")
+        def receive_words(self, serial, words):
+            if serial == self._lookup_serial and self._words != words:
+                self._words = words
+                self.personalWordsChanged.emit()
+
+        @pyqtSlot(str, str, str, str)
+        def lookup(self, locale, older, previous, prefix):
+            self._lookup_serial += 1
+            serial = self._lookup_serial
+            self.receive_words(serial, [])
+            def read():
+                try:
+                    words = personal.suggestions(locale, older, previous, prefix)
+                except (OSError, sqlite3.Error):
+                    words = []
+                self.personalResult.emit(serial, words)
+            if self._generation and locale:
+                worker.submit(read)
 
         @pyqtSlot(str, str, int)
         def chooseSuggestion(self, prefix, word, revision):
@@ -164,7 +235,12 @@ def main():
     QIcon.setFallbackThemeName("breeze")
     if QIcon.themeName() in ("", "hicolor"):
         QIcon.setThemeName("breeze")
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="decktil-words")
     host = Host()
+    host.personalResult.connect(host.receive_words, Qt.ConnectionType.QueuedConnection)
+    setting_timer = QTimer(interval=1200)
+    setting_timer.timeout.connect(host.poll_personal)
+    host.settingResult.connect(host.receive_setting, Qt.ConnectionType.QueuedConnection)
     style_settings = BreezeSettings()
     qmlRegisterSingletonInstance("org.kde.plasma.keyboard", 1, 0, "PlasmaKeyboardSettings", style_settings)
     engine = QQmlApplicationEngine()
@@ -203,6 +279,9 @@ def main():
         shown_timer.stop()
         startup_timeout.stop()
         host.token = None
+        setting_timer.stop()
+        host.reload_personal()
+        host.sequenceReset.emit()
         host.locale_pending = False
         host.set_prediction("", 0)
         host.reset_shift()
@@ -242,6 +321,8 @@ def main():
             if window.isVisible():
                 hide()
             host.token = token
+            host.reload_personal()
+            setting_timer.start()
             if big_picture:
                 locale = request.get("locale")
                 if locale in ("ru_RU", "en_US"):
@@ -277,6 +358,11 @@ def main():
             text, revision = request["text"], request["revision"]
             if isinstance(text, str) and len(text) <= 256 and type(revision) is int:
                 host.set_prediction(text, revision)
+        elif op in ("personalEdit", "resetLearning") and host.token is not None and request.get("token") == host.token:
+            if op == "resetLearning":
+                host.sequenceReset.emit()
+            elif host.personalGeneration and isinstance(request.get("edit"), dict):
+                host.personalEdited.emit(request["edit"])
         elif op == "locale" and big_picture and host.token is not None and request.get("token") == host.token:
             host.locale_pending = False
             locale = request.get("locale")
@@ -344,6 +430,7 @@ def main():
             sys.exit("Could not watch the active Big Picture window.")
     event("ready", xid=xid)
     result = app.exec()
+    worker.shutdown()
     if big_picture:
         focus_watch.kill()
         focus_watch.waitForFinished(1000)

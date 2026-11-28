@@ -11,8 +11,10 @@ class CompletionDataTests(unittest.TestCase):
     def test_general_and_curated_vocabulary(self):
         examples = {
             "ru": [("прив", "привет"), ("вай", "вайб"), ("кри", "кринж"),
-                   ("перезагр", "перезагрузка"), ("правопи", "правописание")],
-            "en": [("hel", "help"), ("low", "lowkey"), ("respa", "respawn"),
+                   ("плаг", "плагин"), ("депл", "деплой"), ("комми", "коммит"),
+                   ("бэке", "бэкенд"), ("вебху", "вебхук"), ("перезагр", "перезагрузка"), ("правопи", "правописание")],
+            "en": [("plug", "plugin"), ("backen", "backend"), ("webh", "webhook"),
+                   ("hel", "help"), ("low", "lowkey"), ("respa", "respawn"),
                    ("y'", "y'all"), ("accessib", "accessibility"), ("autocor", "autocorrect")],
         }
         for lang, cases in examples.items():

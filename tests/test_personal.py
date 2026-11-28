@@ -37,7 +37,8 @@ class PersonalDictionary(unittest.TestCase):
         def use(a, b, word):
             personal.learn(token, "en_US", a, b, word)
         use("let", "us", "flutter")
-        self.assertEqual(personal.suggestions("en", "", "", "fl"), [])
+        self.assertEqual(personal.suggestions("en", "", "", "f"), ["flutter"])
+        self.assertEqual(personal.suggestions("en", "let", "us", ""), ["flutter"])
         use("let", "us", "flutter")
         for _ in range(4):
             use("they", "both", "flourish")
@@ -55,14 +56,21 @@ class PersonalDictionary(unittest.TestCase):
         self.assertEqual(personal.suggestions("ru", "", "", "fl"), [])
         self.assertEqual(personal.suggestions("en", "", "", "fl%"), [])
 
-    def test_learned_typos_require_repetition_and_follow_direct_completions(self):
+    def test_new_terms_win_frequency_ties_without_displacing_regular_words(self):
+        personal.set_enabled(True)
+        token = personal.session()
+        for word in ("алкан", "алкан", "алкен", "алкин", "алкадиен"):
+            personal.learn(token, "ru", "", "", word)
+        self.assertEqual(personal.suggestions("ru", "", "", "а"), ["алкан", "алкадиен", "алкин"])
+
+    def test_first_use_enables_typo_matches_after_direct_completions(self):
         personal.set_enabled(True)
         token = personal.session()
         for lang, word, typo, direct in (("en", "merlux", "nerlux", "nerluxes"),
                                          ("ru", "зорвик", "зоврик", "зоврики")):
             with self.subTest(lang=lang):
                 personal.learn(token, lang, "", "", word)
-                self.assertEqual(personal.suggestions(lang, "", "", typo), [])
+                self.assertEqual(personal.suggestions(lang, "", "", typo), [word])
                 personal.learn(token, lang, "", "", word)
                 self.assertEqual(personal.suggestions(lang, "", "", typo), [word])
                 self.assertEqual(personal.suggestions(lang, "", "", word), [])

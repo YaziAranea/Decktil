@@ -31,6 +31,16 @@ class AppearanceTests(unittest.TestCase):
         self.assertIsNone(appearance.load_custom())
         self.assertFalse(self.config.exists())
 
+    def test_number_row_can_be_hidden_independently_of_the_theme(self):
+        self.assertTrue(appearance.number_row_visible())
+        appearance.save(CUSTOM, number_row=False)
+        appearance.save({"preset": "midnight"})
+        self.assertFalse(appearance.number_row_visible())
+        self.assertEqual(appearance.load_custom(), CUSTOM)
+        appearance.save(appearance.load(), number_row=True)
+        self.assertTrue(appearance.number_row_visible())
+        self.assertEqual(appearance.load()["preset"], "midnight")
+
     def test_custom_survives_preset_switches(self):
         self.assertEqual(appearance.save(dict(CUSTOM, accent="#ffdb60")), CUSTOM)
         for preset in appearance.PRESETS:

@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.VirtualKeyboard
 import QtQuick.VirtualKeyboard.Settings
+import "../../src/DeckLearning.js" as Learning
+import "../../src/DeckPrediction.js" as Prediction
 
 Window {
     id: window
@@ -62,12 +64,64 @@ Window {
         VirtualKeyboardSettings.locale = decktilGamePanel.initialLocale
     }
 
+    property var learningState: null
+
+    function lookupPersonal() {
+        const locale = VirtualKeyboardSettings.locale
+        const text = decktilGamePanel.predictionText
+        const ctx = decktilGamePanel.personalGeneration && text
+            ? Prediction.context(text, text.length, locale) : null
+        const prev = ctx ? ctx.previous : []
+        decktilGamePanel.lookup(ctx ? locale : "", prev[prev.length - 2] || "",
+                                prev[prev.length - 1] || "", ctx ? ctx.prefix : "")
+    }
+
+    function learnEdit(edit) {
+        const generation = decktilGamePanel.personalGeneration
+        // R1 (Space) is delivered by the supervisor and can only finish an
+        // existing sequence. All other edits originate in this panel session.
+        if (!generation || (edit.generation !== generation
+                && !(edit.text === " " && !edit.generation && learningState))) {
+            learningState = null
+            return
+        }
+        if (!learningState)
+            learningState = Learning.start(edit.previous, edit.previous.length)
+        const locale = VirtualKeyboardSettings.locale
+        const ru = locale.startsWith("ru")
+        const records = []
+        if (edit.action === "enter") {
+            Learning.complete(learningState, ru, records)
+            learningState = null
+        } else {
+            Learning.apply(learningState, { text: edit.text, choice: edit.choice,
+                                            erase: edit.action === "backspace" }, ru, records)
+        }
+        for (const entry of records) {
+            const prev = entry.previous
+            decktilGamePanel.learn(generation, locale, prev[prev.length - 2] || "",
+                                   prev[prev.length - 1] || "", entry.word)
+        }
+        if (records.length)
+            lookupPersonal()
+    }
+
     Connections {
         target: VirtualKeyboardSettings
-        function onLocaleChanged() { decktilGamePanel.resetPredictionLocale() }
+        function onLocaleChanged() {
+            window.learningState = null
+            decktilGamePanel.resetPredictionLocale()
+        }
     }
     Connections {
         target: decktilGamePanel
+        function onPersonalGenerationChanged() {
+            window.learningState = null
+            window.lookupPersonal()
+        }
+        function onPredictionChanged() { window.lookupPersonal() }
+        function onSequenceReset() { window.learningState = null }
+        function onPersonalEdited(edit) { window.learnEdit(edit) }
         function onLocaleSelected(locale) { VirtualKeyboardSettings.locale = locale }
         function onSpaceProbe(values) {
             if (!window.visible || !window.coveringNative || !window.selector || touch.pressed

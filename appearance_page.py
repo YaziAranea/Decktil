@@ -4,6 +4,7 @@ import math
 import cairo
 import gi
 gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gdk, Gtk, Pango, PangoCairo
 
@@ -13,6 +14,7 @@ from src import appearance
 COPY = {
     "title": ("Оформление клавиатуры", "Keyboard appearance"),
     "preset": ("Тема", "Theme"),
+    "number_row": ("Показывать ряд цифр 1–0 над буквами", "Show number row 1–0 above letters"),
     "default": ("Системная", "System"),
     "midnight": ("Полночь", "Midnight"),
     "lagoon": ("Лагуна", "Lagoon"),
@@ -107,6 +109,11 @@ class AppearancePage(Gtk.Box):
         self.preview.get_accessible().set_name(self.t("preview"))
         self.preview.connect("draw", self.draw_preview)
         self.add(self.preview)
+        self.saved_number_row = appearance.number_row_visible()
+        self.number_row = Gtk.CheckButton.new_with_label(self.t("number_row"))
+        self.number_row.set_active(self.saved_number_row)
+        self.number_row.connect("toggled", lambda *_: self.sync())
+        self.add(self.number_row)
 
         themes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         label = Gtk.Label(label=self.t("preset"), xalign=0)
@@ -216,12 +223,14 @@ class AppearancePage(Gtk.Box):
             self.updating = False
         self.message.hide()
         self.apply.set_label(self.t("apply"))
-        self.apply.set_sensitive(self.draft != self.saved)
+        self.apply.set_sensitive(self.draft != self.saved or self.number_row.get_active() != self.saved_number_row)
         self.queue_draw()
 
     def commit(self, *_):
         try:
-            self.saved = appearance.save(self.draft)
+            show = self.number_row.get_active()
+            self.saved = appearance.save(self.draft, number_row=show if show != self.saved_number_row else None)
+            self.saved_number_row = show
         except (OSError, ValueError) as error:
             self.message.set_text(f"{self.t('save_error')} — {error}")
             self.message.show()
@@ -287,9 +296,11 @@ class AppearancePage(Gtk.Box):
         paint_gradient(cr, palette, "background", 0, 0, width, height, 13)
         rows = ("йцукенгшщзх", "фывапролджэ", "⇧ячсмитьбю⌫") if self.lang == 0 else (
                 "qwertyuiop", "asdfghjkl", "⇧zxcvbnm⌫")
+        if self.number_row.get_active():
+            rows = ("1234567890", *rows)
         margin, gap = 9, 4
         cell_w = (width - 2*margin + gap) / max(map(len, rows)) - gap
-        cell_h = (height - 2*margin - 3*gap) / 4
+        cell_h = (height - 2*margin - len(rows)*gap) / (len(rows)+1)
         text = widget.create_pango_layout("")
         font = widget.get_style_context().get_font(Gtk.StateFlags.NORMAL).copy()
         font.set_absolute_size(16 * Pango.SCALE)
@@ -313,13 +324,13 @@ class AppearancePage(Gtk.Box):
         for r, row in enumerate(rows):
             left = (width - (len(row)*(cell_w+gap)-gap)) / 2
             for i, letter in enumerate(row):
-                key(left+i*(cell_w+gap), margin+r*(cell_h+gap), cell_w, letter, highlighted=r == 1 and i == 3)
+                key(left+i*(cell_w+gap), margin+r*(cell_h+gap), cell_w, letter, highlighted=r == len(rows)-2 and i == 3)
         bottom = (("?123", 1.5), (",", 1), ("русский" if self.lang == 0 else "English", 5), (".", 1), ("↵", 1.5))
         unit = (width - 2*margin - (len(bottom)-1)*gap) / sum(units for _, units in bottom)
         x = margin
         font.set_absolute_size(12 * Pango.SCALE)
         text.set_font_description(font)
         for label, units in bottom:
-            key(x, margin+3*(cell_h+gap), unit*units, label)
+            key(x, margin+len(rows)*(cell_h+gap), unit*units, label)
             x += unit*units+gap
         return False
